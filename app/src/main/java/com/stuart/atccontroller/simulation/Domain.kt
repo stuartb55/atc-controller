@@ -1,0 +1,453 @@
+package com.stuart.atccontroller.simulation
+
+/** A position in normalized map coordinates: (0, 0) is north-west and (1, 1) south-east. */
+data class Vec2(val x: Double, val y: Double) {
+    init {
+        require(x.isFinite() && y.isFinite()) { "Coordinates must be finite" }
+        require(x in 0.0..1.0 && y in 0.0..1.0) { "Coordinates must be normalized" }
+    }
+}
+
+data class Route(val waypoints: List<Vec2>) {
+    companion object {
+        val EMPTY = Route(emptyList())
+    }
+}
+
+enum class FlightOperation { ARRIVAL, DEPARTURE }
+
+enum class AircraftStatus {
+    INBOUND,
+    APPROACH,
+    GO_AROUND,
+    HOLDING_SHORT,
+    TAKEOFF_ROLL,
+    DEPARTING,
+    LANDING,
+    LANDED,
+    EXITED,
+    CRASHED,
+}
+
+enum class AircraftType(
+    val maxSpeedKnots: Double,
+    val takeoffSpeedKnots: Double,
+    val maxLandingSpeedKnots: Double,
+    val turnRateDegreesPerSecond: Double,
+    val climbRateFeetPerMinute: Double,
+    val descentRateFeetPerMinute: Double,
+    val accelerationKnotsPerSecond: Double,
+    val takeoffRollSeconds: Double,
+    val landingRollSeconds: Double,
+) {
+    LIGHT(250.0, 90.0, 105.0, 15.0, 1_800.0, 1_500.0, 12.0, 7.0, 8.0),
+    REGIONAL(330.0, 125.0, 140.0, 10.0, 2_000.0, 1_600.0, 10.0, 10.0, 11.0),
+    JET(480.0, 150.0, 165.0, 8.0, 2_500.0, 2_000.0, 8.0, 13.0, 14.0),
+    HEAVY(520.0, 165.0, 180.0, 5.0, 2_200.0, 1_800.0, 6.0, 17.0, 19.0),
+}
+
+sealed interface Clearance {
+    object None : Clearance {
+        override fun toString() = "None"
+    }
+
+    data class Land(val runwayId: String) : Clearance
+    data class Takeoff(val runwayId: String) : Clearance
+    data class GoAround(val targetAltitudeFeet: Double) : Clearance
+}
+
+data class AircraftState(
+    val id: String,
+    val callsign: String,
+    val type: AircraftType,
+    val operation: FlightOperation,
+    val status: AircraftStatus,
+    val position: Vec2,
+    /** Aviation heading: 0 is north, 90 east. */
+    val headingDegrees: Double,
+    val altitudeFeet: Double,
+    val speedKnots: Double,
+    val targetAltitudeFeet: Double = altitudeFeet,
+    val targetSpeedKnots: Double = speedKnots,
+    val route: Route = Route.EMPTY,
+    val routeIndex: Int = 0,
+    val clearance: Clearance = Clearance.None,
+    /** Assigned runway for a departure, or the runway currently used by an arrival. */
+    val runwayId: String? = null,
+    /** The desired terminal-area exit for a departure. */
+    val exitPoint: Vec2? = null,
+    /** Total deterministic endurance assigned when this aircraft enters the scenario. */
+    val fuelCapacitySeconds: Double = 600.0,
+    /** Remaining deterministic endurance. This is decremented only by fixed simulation steps. */
+    val fuelRemainingSeconds: Double = fuelCapacitySeconds,
+    val distanceTravelledNm: Double = 0.0,
+    val statusElapsedSeconds: Double = 0.0,
+) {
+    init {
+        require(id.isNotBlank()) { "Aircraft id must not be blank" }
+        require(callsign.isNotBlank()) { "Callsign must not be blank" }
+        require(headingDegrees.isFinite()) { "Heading must be finite" }
+        require(altitudeFeet >= 0.0 && altitudeFeet.isFinite()) { "Altitude must be non-negative" }
+        require(speedKnots >= 0.0 && speedKnots.isFinite()) { "Speed must be non-negative" }
+        require(targetAltitudeFeet >= 0.0 && targetAltitudeFeet.isFinite()) {
+            "Target altitude must be non-negative"
+        }
+        require(targetSpeedKnots >= 0.0 && targetSpeedKnots.isFinite()) {
+            "Target speed must be non-negative"
+        }
+        require(fuelCapacitySeconds > 0.0 && fuelCapacitySeconds.isFinite()) {
+            "Fuel capacity must be finite and positive"
+        }
+        require(fuelRemainingSeconds.isFinite() && fuelRemainingSeconds in 0.0..fuelCapacitySeconds) {
+            "Remaining fuel must be finite and within the aircraft's capacity"
+        }
+        require(distanceTravelledNm >= 0.0 && distanceTravelledNm.isFinite()) {
+            "Distance travelled must be finite and non-negative"
+        }
+        require(statusElapsedSeconds >= 0.0 && statusElapsedSeconds.isFinite()) {
+            "Status elapsed time must be finite and non-negative"
+        }
+        require(routeIndex in 0..route.waypoints.size) { "Route index is out of range" }
+    }
+
+    companion object {
+        fun inbound(
+            id: String,
+            callsign: String,
+            type: AircraftType,
+            position: Vec2,
+            headingDegrees: Double,
+            altitudeFeet: Double,
+            speedKnots: Double,
+            route: Route = Route.EMPTY,
+        ) = AircraftState(
+            id = id,
+            callsign = callsign,
+            type = type,
+            operation = FlightOperation.ARRIVAL,
+            status = AircraftStatus.INBOUND,
+            position = position,
+            headingDegrees = headingDegrees,
+            altitudeFeet = altitudeFeet,
+            speedKnots = speedKnots,
+            route = Route(route.waypoints.toList()),
+        )
+
+        fun holdingShort(
+            id: String,
+            callsign: String,
+            type: AircraftType,
+            runway: RunwayState,
+            exitPoint: Vec2,
+            holdingPosition: Vec2,
+            route: Route = Route(listOf(exitPoint)),
+        ) = AircraftState(
+            id = id,
+            callsign = callsign,
+            type = type,
+            operation = FlightOperation.DEPARTURE,
+            status = AircraftStatus.HOLDING_SHORT,
+            position = holdingPosition,
+            headingDegrees = runway.headingDegrees,
+            altitudeFeet = 0.0,
+            speedKnots = 0.0,
+            targetAltitudeFeet = 5_000.0,
+            targetSpeedKnots = type.takeoffSpeedKnots + 60.0,
+            route = Route(route.waypoints.toList()),
+            runwayId = runway.id,
+            exitPoint = exitPoint,
+        )
+    }
+}
+
+data class RunwayState(
+    val id: String,
+    val threshold: Vec2,
+    val end: Vec2,
+    val headingDegrees: Double,
+    val active: Boolean = true,
+    val occupiedByAircraftId: String? = null,
+) {
+    init {
+        require(id.isNotBlank()) { "Runway id must not be blank" }
+        require(headingDegrees.isFinite()) { "Runway heading must be finite" }
+        require(threshold != end) { "Runway endpoints must differ" }
+    }
+}
+
+data class ScheduledAircraft(
+    val spawnTimeSeconds: Double,
+    val aircraft: AircraftState,
+    /** Deterministic symmetric jitter applied from the scenario seed. */
+    val spawnJitterSeconds: Double = 0.0,
+) {
+    init {
+        require(spawnTimeSeconds >= 0.0 && spawnTimeSeconds.isFinite()) {
+            "Spawn time must be non-negative"
+        }
+        require(spawnJitterSeconds >= 0.0 && spawnJitterSeconds.isFinite()) {
+            "Spawn jitter must be non-negative"
+        }
+    }
+}
+
+data class ScenarioObjectives(
+    val safeMovementsToComplete: Int = 0,
+    val arrivalsToLand: Int = 0,
+    val departuresToExit: Int = 0,
+    val minimumScore: Int = 0,
+    /** Maximum strikes permitted by the authored objective before the mission fails. */
+    val maximumStrikes: Int = Int.MAX_VALUE,
+    val completeWhenAllTrafficResolved: Boolean = true,
+    val starScoreThresholds: List<Int> = listOf(1_000, 2_000, 3_000),
+) {
+    init {
+        require(safeMovementsToComplete >= 0 && arrivalsToLand >= 0 && departuresToExit >= 0)
+        require(minimumScore >= 0) { "Minimum score must not be negative" }
+        require(maximumStrikes >= 0) { "Maximum strikes must not be negative" }
+        require(starScoreThresholds.size == 3) { "Exactly three star thresholds are required" }
+        require(
+            starScoreThresholds.all { it > 0 } &&
+                starScoreThresholds == starScoreThresholds.sorted() &&
+                starScoreThresholds.distinct().size == starScoreThresholds.size,
+        ) {
+            "Star thresholds must be positive and strictly ascending"
+        }
+    }
+}
+
+/** Executable scoring rules carried by every scenario instead of hard-coded engine constants. */
+data class ScenarioScoringRules(
+    val safeArrivalPoints: Int = 1_000,
+    val safeDeparturePoints: Int = 750,
+    val maximumRouteEfficiencyBonusPoints: Int = 250,
+    val routeInefficiencyPenaltyPointsPerNm: Double = 15.0,
+    val maximumTimeBonusPoints: Int = 300,
+    val timeBonusDecayPointsPerSecond: Double = 1.0,
+    val completionBonusPoints: Int = 0,
+    val conflictPenaltyPoints: Int = 500,
+    val automaticGoAroundPenaltyPoints: Int = 200,
+    val manualGoAroundPenaltyPoints: Int = 50,
+    val missedExitPenaltyPoints: Int = 250,
+) {
+    init {
+        require(
+            listOf(
+                safeArrivalPoints,
+                safeDeparturePoints,
+                maximumRouteEfficiencyBonusPoints,
+                maximumTimeBonusPoints,
+                completionBonusPoints,
+                conflictPenaltyPoints,
+                automaticGoAroundPenaltyPoints,
+                manualGoAroundPenaltyPoints,
+                missedExitPenaltyPoints,
+            ).all { it >= 0 },
+        ) { "Scoring points and penalties must not be negative" }
+        require(
+            routeInefficiencyPenaltyPointsPerNm.isFinite() &&
+                routeInefficiencyPenaltyPointsPerNm >= 0.0,
+        ) { "Route inefficiency penalty must be finite and non-negative" }
+        require(timeBonusDecayPointsPerSecond.isFinite() && timeBonusDecayPointsPerSecond >= 0.0) {
+            "Time bonus decay must be finite and non-negative"
+        }
+    }
+}
+
+data class ScenarioDefinition(
+    val id: String,
+    val title: String,
+    val seed: Long,
+    val runways: List<RunwayState>,
+    val traffic: List<ScheduledAircraft>,
+    val objectives: ScenarioObjectives,
+    val scoring: ScenarioScoringRules = ScenarioScoringRules(),
+    val mapWidthNm: Double = 24.0,
+    val mapHeightNm: Double = 24.0,
+    val maxDurationSeconds: Double = 600.0,
+    val maxStrikes: Int = 3,
+) {
+    init {
+        require(id.isNotBlank() && title.isNotBlank())
+        require(runways.isNotEmpty()) { "At least one runway is required" }
+        require(runways.map { it.id }.distinct().size == runways.size) { "Runway ids must be unique" }
+        require(traffic.map { it.aircraft.id }.distinct().size == traffic.size) {
+            "Aircraft ids must be unique"
+        }
+        require(mapWidthNm.isFinite() && mapWidthNm > 0.0) { "Map width must be finite and positive" }
+        require(mapHeightNm.isFinite() && mapHeightNm > 0.0) { "Map height must be finite and positive" }
+        require(maxDurationSeconds.isFinite() && maxDurationSeconds > 0.0) {
+            "Maximum duration must be finite and positive"
+        }
+        require(maxStrikes > 0)
+    }
+}
+
+enum class ConflictKind { PREDICTED, LOSS_OF_SEPARATION, COLLISION }
+
+data class Conflict(
+    val firstAircraftId: String,
+    val secondAircraftId: String,
+    val kind: ConflictKind,
+    val horizontalDistanceNm: Double,
+    val verticalDistanceFeet: Double,
+    val timeToClosestApproachSeconds: Double,
+)
+
+enum class FailureReason {
+    TOO_MANY_STRIKES,
+    COLLISION,
+    RUNWAY_INCURSION,
+    AIRCRAFT_LOST,
+    FUEL_EXHAUSTED,
+    TIME_EXPIRED,
+}
+
+enum class GameStatus { READY, RUNNING, PAUSED, COMPLETED, FAILED }
+
+data class ScoreBreakdown(
+    val safeArrivals: Int = 0,
+    val safeDepartures: Int = 0,
+    val basePoints: Int = 0,
+    val efficiencyPoints: Int = 0,
+    val timeBonusPoints: Int = 0,
+    val completionBonusPoints: Int = 0,
+    /** A positive number which is subtracted from the earned score. */
+    val penalties: Int = 0,
+) {
+    val total: Int
+        get() = (
+            basePoints.toLong() + efficiencyPoints + timeBonusPoints + completionBonusPoints - penalties
+        ).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+}
+
+sealed interface GameEvent {
+    val elapsedSeconds: Double
+
+    data class AircraftSpawned(val aircraftId: String, override val elapsedSeconds: Double) : GameEvent
+    data class RouteUpdated(val aircraftId: String, override val elapsedSeconds: Double) : GameEvent
+    data class ClearanceIssued(
+        val aircraftId: String,
+        val clearance: Clearance,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+
+    data class CommandRejected(
+        val aircraftId: String?,
+        val reason: String,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+
+    data class ConflictWarning(val conflict: Conflict, override val elapsedSeconds: Double) : GameEvent
+    data class SeparationLost(val conflict: Conflict, override val elapsedSeconds: Double) : GameEvent
+    data class StrikeIssued(val aircraftIds: Set<String>, override val elapsedSeconds: Double) : GameEvent
+    data class Collision(val conflict: Conflict, override val elapsedSeconds: Double) : GameEvent
+    data class GoAround(
+        val aircraftId: String,
+        val automatic: Boolean,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+
+    data class Touchdown(val aircraftId: String, val runwayId: String, override val elapsedSeconds: Double) : GameEvent
+    data class Landed(val aircraftId: String, val runwayId: String, override val elapsedSeconds: Double) : GameEvent
+    data class Takeoff(val aircraftId: String, val runwayId: String, override val elapsedSeconds: Double) : GameEvent
+    data class AircraftExited(
+        val aircraftId: String,
+        val correctExit: Boolean,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+
+    data class AircraftLeftAirspace(val aircraftId: String, override val elapsedSeconds: Double) : GameEvent
+    data class RunwayIncursion(
+        val runwayId: String,
+        val aircraftIds: Set<String>,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+
+    data class ScenarioCompleted(override val elapsedSeconds: Double) : GameEvent
+    data class ScenarioFailed(val reason: FailureReason, override val elapsedSeconds: Double) : GameEvent
+}
+
+sealed interface PlayerCommand {
+    object Start : PlayerCommand
+    object Pause : PlayerCommand
+    object Resume : PlayerCommand
+    data class SetSimulationSpeed(val multiplier: Double) : PlayerCommand
+    data class SetRoute(val aircraftId: String, val route: Route) : PlayerCommand
+    data class SetTargetAltitude(val aircraftId: String, val altitudeFeet: Double) : PlayerCommand
+    data class SetTargetSpeed(val aircraftId: String, val speedKnots: Double) : PlayerCommand
+    data class ClearToLand(val aircraftId: String, val runwayId: String) : PlayerCommand
+    data class ClearForTakeoff(val aircraftId: String, val runwayId: String) : PlayerCommand
+    data class GoAround(val aircraftId: String, val targetAltitudeFeet: Double = 3_000.0) : PlayerCommand
+}
+
+data class GameSnapshot(
+    val scenarioId: String,
+    val tick: Long,
+    val elapsedSeconds: Double,
+    val status: GameStatus,
+    val failureReason: FailureReason?,
+    val speedMultiplier: Double,
+    val aircraft: List<AircraftState>,
+    val runways: List<RunwayState>,
+    val conflicts: List<Conflict>,
+    val strikes: Int,
+    val score: ScoreBreakdown,
+    val stars: Int,
+    val pendingAircraftCount: Int,
+    /** Events produced by the most recent engine operation. */
+    val events: List<GameEvent>,
+)
+
+data class SimulationParameters(
+    val fixedStepSeconds: Double = 0.1,
+    val horizontalSeparationNm: Double = 3.0,
+    val verticalSeparationFeet: Double = 1_000.0,
+    val predictionHorizonSeconds: Double = 30.0,
+    val collisionHorizontalNm: Double = 0.15,
+    val collisionVerticalFeet: Double = 200.0,
+    val waypointCaptureNm: Double = 0.08,
+    val approachCaptureDistanceNm: Double = 3.0,
+    val approachLateralToleranceNm: Double = 0.35,
+    val approachHeadingToleranceDegrees: Double = 18.0,
+    val touchdownRadiusNm: Double = 0.12,
+    val maxTouchdownAltitudeFeet: Double = 350.0,
+    val exitCaptureNm: Double = 0.3,
+) {
+    init {
+        val values = listOf(
+            fixedStepSeconds,
+            horizontalSeparationNm,
+            verticalSeparationFeet,
+            predictionHorizonSeconds,
+            collisionHorizontalNm,
+            collisionVerticalFeet,
+            waypointCaptureNm,
+            approachCaptureDistanceNm,
+            approachLateralToleranceNm,
+            approachHeadingToleranceDegrees,
+            touchdownRadiusNm,
+            maxTouchdownAltitudeFeet,
+            exitCaptureNm,
+        )
+        require(values.all(Double::isFinite)) { "Simulation parameters must be finite" }
+        require(fixedStepSeconds > 0.0) { "Fixed step must be positive" }
+        require(collisionHorizontalNm > 0.0 && horizontalSeparationNm > collisionHorizontalNm) {
+            "Horizontal separation must exceed the positive collision distance"
+        }
+        require(collisionVerticalFeet > 0.0 && verticalSeparationFeet > collisionVerticalFeet) {
+            "Vertical separation must exceed the positive collision distance"
+        }
+        require(predictionHorizonSeconds > 0.0) { "Prediction horizon must be positive" }
+        require(waypointCaptureNm > 0.0) { "Waypoint capture distance must be positive" }
+        require(approachCaptureDistanceNm > touchdownRadiusNm && touchdownRadiusNm > 0.0) {
+            "Approach capture distance must exceed the positive touchdown radius"
+        }
+        require(approachLateralToleranceNm > 0.0) { "Approach lateral tolerance must be positive" }
+        require(approachHeadingToleranceDegrees in 0.0..90.0) {
+            "Approach heading tolerance must be from 0 to 90 degrees"
+        }
+        require(maxTouchdownAltitudeFeet >= 0.0) { "Touchdown altitude must not be negative" }
+        require(exitCaptureNm > 0.0) { "Exit capture distance must be positive" }
+    }
+}

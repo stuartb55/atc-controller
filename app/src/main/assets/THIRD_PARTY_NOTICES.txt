@@ -1,0 +1,42 @@
+Manchester Approach — Third-party software notices
+==================================================
+
+This application is distributed with open-source libraries. The production dependency set was
+reviewed on 15 July 2026. Gradle dependency verification metadata records the exact artifacts and
+checksums used by the build.
+
+Apache License 2.0
+------------------
+
+The following library families are licensed under the Apache License, Version 2.0:
+
+* AndroidX and Jetpack, including Activity, Annotation, Collection, Compose, Core, DataStore,
+  Lifecycle, Material 3, Profile Installer, Saved State, Startup and their support libraries.
+  Copyright The Android Open Source Project contributors.
+* Kotlin standard libraries, Kotlin serialization and kotlinx.coroutines.
+  Copyright JetBrains s.r.o. and Kotlin contributors.
+* Okio. Copyright Square, Inc. and contributors.
+* JetBrains annotations, JSpecify annotations, javax.inject and Guava ListenableFuture support.
+  Copyright their respective authors and contributors.
+
+The complete licence is packaged at assets/licenses/APACHE-2.0.txt. Component-specific licence
+files supplied by AndroidX are also retained under META-INF/androidx in the application package.
+
+BSD 3-Clause License
+--------------------
+
+AndroidX DataStore Preferences contains portions derived from Protocol Buffers.
+Copyright 2008 Google Inc. The complete licence is packaged at
+assets/licenses/BSD-3-CLAUSE.txt and the component-specific copy supplied by AndroidX is retained
+under META-INF/androidx/datastore.
+
+Source and licence information
+------------------------------
+
+* AndroidX: https://source.android.com/docs/setup/about/licenses
+* Kotlin: https://github.com/JetBrains/kotlin
+* kotlinx.coroutines: https://github.com/Kotlin/kotlinx.coroutines
+* Okio: https://github.com/square/okio
+* Protocol Buffers: https://github.com/protocolbuffers/protobuf
+
+No third-party audio, artwork or gameplay content is bundled with the application.

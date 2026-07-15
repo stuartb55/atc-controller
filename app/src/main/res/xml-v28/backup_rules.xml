@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- On API 28-30, include progress only for a direct device-to-device transfer. -->
+    <include
+        domain="file"
+        path="datastore/"
+        requireFlags="deviceToDeviceTransfer" />
+</full-backup-content>
