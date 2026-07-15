@@ -1,6 +1,12 @@
 package com.stuart.atccontroller.data
 
 import com.stuart.atccontroller.simulation.FlightOperation
+import com.stuart.atccontroller.simulation.AircraftStatus
+import com.stuart.atccontroller.simulation.AtcSimulationEngine
+import com.stuart.atccontroller.simulation.GameStatus
+import com.stuart.atccontroller.simulation.PlayerCommand
+import com.stuart.atccontroller.simulation.Route
+import com.stuart.atccontroller.simulation.Vec2
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -9,6 +15,38 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ManchesterContentTest {
+    @Test
+    fun firstMissionCanBeCompletedWithThePresentedApproachSetupFlow() {
+        val authored = ManchesterContent.authoredMissions.first()
+        val engine = AtcSimulationEngine(authored.toSimulationScenario())
+        val configured = mutableSetOf<String>()
+        engine.submit(PlayerCommand.Start)
+
+        repeat(authored.maxDurationSeconds * 10) {
+            engine.snapshot.aircraft
+                .filter { it.status == AircraftStatus.INBOUND && configured.add(it.id) }
+                .forEach { aircraft ->
+                    val runwayId = checkNotNull(aircraft.runwayId)
+                    engine.submit(
+                        PlayerCommand.SetRoute(
+                            aircraft.id,
+                            Route(
+                                ManchesterContent.finalApproachPoints(runwayId)
+                                    .map { Vec2(it.x, it.y) },
+                            ),
+                        ),
+                    )
+                    engine.submit(PlayerCommand.SetTargetAltitude(aircraft.id, 0.0))
+                    engine.submit(PlayerCommand.SetTargetSpeed(aircraft.id, aircraft.type.maxLandingSpeedKnots))
+                    engine.submit(PlayerCommand.ClearToLand(aircraft.id, runwayId))
+                }
+            if (engine.snapshot.status == GameStatus.RUNNING) engine.advanceFixedSteps()
+        }
+
+        assertEquals(GameStatus.COMPLETED, engine.snapshot.status)
+        assertEquals(3, engine.snapshot.score.safeArrivals)
+    }
+
     @Test
     fun airportContainsTwoParallelRunwaysAndDatedEntertainmentMetadata() {
         val airport = ManchesterContent.airport

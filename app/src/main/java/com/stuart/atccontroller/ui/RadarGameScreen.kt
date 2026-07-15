@@ -84,6 +84,7 @@ import com.stuart.atccontroller.R
 import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 @Composable
@@ -322,7 +323,7 @@ private fun RadarDisplay(
     val latestSelectedAircraft by rememberUpdatedState(state.selectedAircraft)
     val hitRadiusPx = with(LocalDensity.current) { 48.dp.toPx() }
     val radarDescription = stringResource(R.string.cd_terminal_radar)
-    val directFix = state.selectedAircraft?.let { selected ->
+    val directFix = state.selectedAircraft?.takeIf { it.phase == FlightPhase.DEPARTURE }?.let { selected ->
         state.fixes.minByOrNull { fix ->
             hypot(
                 (fix.position.x - selected.position.x).toDouble(),
@@ -449,6 +450,18 @@ private fun RadarDisplay(
                     fontSize = 8.sp,
                 )
             }
+
+            state.visibleRunways.forEach { runway ->
+                RunwayEndLabels(
+                    runway = runway,
+                    plotWidth = plotWidth,
+                    plotHeight = plotHeight,
+                )
+            }
+
+            CompassReference(
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+            )
 
             state.aircraft.forEach { aircraft ->
                 val labelX = (plotWidth * aircraft.position.x + 13.dp).coerceIn(2.dp, plotWidth - 98.dp)
@@ -754,6 +767,15 @@ private fun DrawScope.drawAircraft(aircraft: List<AircraftUiModel>, selectedId: 
             drawCircle(color.copy(alpha = .8f), 15f, p, style = Stroke(1.4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 3f))))
         }
         rotate(item.headingDegrees, pivot = p) {
+            // A short leader ahead of the target makes the current track easier to compare with
+            // a runway centreline than the aircraft glyph alone.
+            drawLine(
+                color = color.copy(alpha = if (item.id == selectedId) .9f else .58f),
+                start = p + Offset(0f, -10f),
+                end = p + Offset(0f, if (item.id == selectedId) -29f else -22f),
+                strokeWidth = if (item.id == selectedId) 1.8f else 1.2f,
+                cap = StrokeCap.Round,
+            )
             val shape = Path().apply {
                 moveTo(p.x, p.y - 9f)
                 lineTo(p.x + 6.5f, p.y + 7f)
@@ -780,6 +802,7 @@ private fun AircraftDataLabel(
     val baseDescription = stringResource(
         R.string.cd_aircraft_target,
         aircraft.callsign,
+        normalizedHeading(aircraft.headingDegrees),
         localizedInteger(aircraft.altitudeFeet),
         localizedInteger(aircraft.speedKnots),
         aircraft.clearance,
@@ -841,6 +864,18 @@ private fun AircraftDataLabel(
                             stringResource(R.string.flight_level_code, aircraft.altitudeFeet / 100),
                             altitudeTrend(aircraft),
                             aircraft.speedKnots,
+                            normalizedHeading(aircraft.headingDegrees),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.white,
+                        fontSize = 8.sp,
+                        maxLines = 1,
+                    )
+                } else {
+                    Text(
+                        stringResource(
+                            R.string.aircraft_heading_compact,
+                            normalizedHeading(aircraft.headingDegrees),
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.white,
@@ -851,6 +886,105 @@ private fun AircraftDataLabel(
             }
         }
     }
+}
+
+@Composable
+private fun RunwayEndLabels(
+    runway: RunwayUiModel,
+    plotWidth: Dp,
+    plotHeight: Dp,
+) {
+    val radians = Math.toRadians(runway.headingDegrees.toDouble())
+    val axisX = sin(radians).toFloat()
+    val axisY = -cos(radians).toFloat()
+    val halfLength = minOf(plotWidth, plotHeight) * .145f
+    val badgeGap = 16.dp
+    val labelWidth = 76.dp
+    val labelHeight = 22.dp
+
+    // The model's threshold is the start of travel along the runway heading.
+    val thresholdX = (plotWidth * runway.center.x - (halfLength + badgeGap) * axisX - labelWidth / 2)
+        .coerceIn(2.dp, (plotWidth - labelWidth - 2.dp).coerceAtLeast(2.dp))
+    val thresholdY = (plotHeight * runway.center.y - (halfLength + badgeGap) * axisY - labelHeight / 2)
+        .coerceIn(2.dp, (plotHeight - labelHeight - 2.dp).coerceAtLeast(2.dp))
+    val farEndX = (plotWidth * runway.center.x + (halfLength + badgeGap) * axisX - labelWidth / 2)
+        .coerceIn(2.dp, (plotWidth - labelWidth - 2.dp).coerceAtLeast(2.dp))
+    val farEndY = (plotHeight * runway.center.y + (halfLength + badgeGap) * axisY - labelHeight / 2)
+        .coerceIn(2.dp, (plotHeight - labelHeight - 2.dp).coerceAtLeast(2.dp))
+
+    RunwayBadge(
+        text = stringResource(
+            R.string.runway_heading_label,
+            runway.id,
+            normalizedHeading(runway.headingDegrees),
+        ),
+        active = true,
+        modifier = Modifier.offset(thresholdX, thresholdY),
+    )
+    RunwayBadge(
+        text = reciprocalRunwayId(runway.id),
+        active = false,
+        modifier = Modifier.offset(farEndX, farEndY),
+    )
+}
+
+@Composable
+private fun RunwayBadge(text: String, active: Boolean, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = modifier.width(76.dp),
+        color = colors.night.copy(alpha = if (active) .92f else .76f),
+        shape = RoundedCornerShape(4.dp),
+        border = BorderStroke(1.dp, if (active) colors.cyan else colors.line),
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp),
+            color = if (active) colors.cyan else colors.muted,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            fontSize = if (active) 8.sp else 7.sp,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun CompassReference(modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = modifier,
+        color = colors.night.copy(alpha = .78f),
+        shape = RoundedCornerShape(6.dp),
+        border = BorderStroke(1.dp, colors.line.copy(alpha = .8f)),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(stringResource(R.string.compass_north), color = colors.green, fontFamily = FontFamily.Monospace, fontSize = 7.sp)
+            Text(stringResource(R.string.compass_east_west), color = colors.muted, fontFamily = FontFamily.Monospace, fontSize = 6.sp)
+            Text(stringResource(R.string.compass_south), color = colors.muted, fontFamily = FontFamily.Monospace, fontSize = 7.sp)
+        }
+    }
+}
+
+internal fun normalizedHeading(headingDegrees: Float): Int =
+    ((headingDegrees.roundToInt() % 360) + 360) % 360
+
+internal fun reciprocalRunwayId(runwayId: String): String {
+    val match = Regex("^(\\d{2})([LRC]?)$").matchEntire(runwayId.uppercase(Locale.UK))
+        ?: return runwayId
+    val runwayNumber = match.groupValues[1].toIntOrNull()?.takeIf { it in 1..36 }
+        ?: return runwayId
+    val reciprocalNumber = ((runwayNumber + 17) % 36) + 1
+    val reciprocalSide = when (match.groupValues[2]) {
+        "L" -> "R"
+        "R" -> "L"
+        else -> match.groupValues[2]
+    }
+    return String.format(Locale.UK, "%02d%s", reciprocalNumber, reciprocalSide)
 }
 
 @Composable
@@ -1023,7 +1157,7 @@ private fun CommandPanel(
         if (selected == null) {
             EmptySelection(state.aircraft.size)
         } else {
-            val directFix = state.fixes.minByOrNull { fix ->
+            val directFix = state.fixes.takeIf { selected.phase == FlightPhase.DEPARTURE }?.minByOrNull { fix ->
                 hypot(
                     (fix.position.x - selected.position.x).toDouble(),
                     (fix.position.y - selected.position.y).toDouble(),
@@ -1077,6 +1211,18 @@ private fun CommandPanel(
                         onClick = { onAction(GameAction.IssueClearance(ClearanceType.TAKE_OFF)) },
                     )
                 } else {
+                    ClearanceButton(
+                        label = stringResource(R.string.prepare_approach),
+                        caption = stringResource(
+                            R.string.prepare_approach_caption,
+                            selected.assignedRunway
+                                ?: state.visibleRunways.firstOrNull()?.id
+                                ?: stringResource(R.string.not_available_short),
+                        ),
+                        accent = colors.cyan,
+                        onClick = { onAction(GameAction.PrepareApproach) },
+                    )
+                    Spacer(Modifier.height(6.dp))
                     ClearanceButton(
                         label = stringResource(R.string.clear_land),
                         caption = selected.assignedRunway

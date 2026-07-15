@@ -2,6 +2,9 @@
 
 An offline Android air traffic control strategy game. Draw routes, assign altitude and speed, and sequence arrivals and departures around a simplified Manchester Airport terminal area.
 
+New controller? Start with the [complete how-to-play guide](HOW_TO_PLAY.md), including a
+step-by-step walkthrough of the first mission.
+
 ## Included gameplay
 
 - Eight progressive missions plus an escalating endless shift

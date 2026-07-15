@@ -51,6 +51,20 @@ class PhaseZeroPresentationTest {
         assertEquals(true, mapped[1].isLossOfSeparation)
     }
 
+    @Test
+    fun headingsAreNormalizedForRadarLabels() {
+        assertEquals(0, normalizedHeading(360f))
+        assertEquals(359, normalizedHeading(-1f))
+        assertEquals(232, normalizedHeading(231.6f))
+    }
+
+    @Test
+    fun reciprocalRunwayLabelsSwapParallelSides() {
+        assertEquals("05L", reciprocalRunwayId("23R"))
+        assertEquals("23L", reciprocalRunwayId("05R"))
+        assertEquals("27", reciprocalRunwayId("09"))
+    }
+
     private fun conflict(
         firstId: String,
         secondId: String,

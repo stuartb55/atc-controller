@@ -30,6 +30,7 @@ import com.stuart.atccontroller.simulation.Clearance
 import com.stuart.atccontroller.simulation.Conflict
 import com.stuart.atccontroller.simulation.ConflictKind
 import com.stuart.atccontroller.simulation.FailureReason
+import com.stuart.atccontroller.simulation.FlightOperation
 import com.stuart.atccontroller.simulation.GameEvent
 import com.stuart.atccontroller.simulation.GameSnapshot
 import com.stuart.atccontroller.simulation.GameStatus
@@ -199,6 +200,7 @@ class LiveGameViewModel internal constructor(
                     speedKnots = action.knots.coerceIn(80, aircraft.type.maxSpeedKnots.toInt()).toDouble(),
                 )
             }
+            GameAction.PrepareApproach -> prepareApproach()
             is GameAction.IssueClearance -> issueClearance(action.type)
             GameAction.TogglePause -> togglePause()
             is GameAction.SetTimeScale -> {
@@ -566,6 +568,29 @@ class LiveGameViewModel internal constructor(
         val id = uiState.selectedAircraftId ?: return
         val aircraft = lastSnapshot?.aircraft?.firstOrNull { it.id == id } ?: return
         submit(command(aircraft))
+    }
+
+    /**
+     * Touch-friendly equivalent to drawing an exact final and repeatedly stepping altitude and
+     * speed down. The three engine commands remain explicit in the deterministic replay log.
+     */
+    private fun prepareApproach() {
+        val aircraft = uiState.selectedAircraftId?.let { selectedId ->
+            lastSnapshot?.aircraft?.firstOrNull { it.id == selectedId }
+        } ?: return
+        if (aircraft.operation != FlightOperation.ARRIVAL) return
+        val runwayId = aircraft.runwayId ?: return
+        val finalApproach = ManchesterContent.finalApproachPoints(runwayId)
+        submit(
+            PlayerCommand.SetRoute(
+                aircraft.id,
+                Route(
+                    finalApproach.map { Vec2(it.x, it.y) },
+                ),
+            ),
+        )
+        submit(PlayerCommand.SetTargetAltitude(aircraft.id, 0.0))
+        submit(PlayerCommand.SetTargetSpeed(aircraft.id, aircraft.type.maxLandingSpeedKnots))
     }
 
     private fun issueClearance(type: ClearanceType) {

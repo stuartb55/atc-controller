@@ -1,5 +1,8 @@
 package com.stuart.atccontroller.data
 
+import com.stuart.atccontroller.simulation.Navigation
+import com.stuart.atccontroller.simulation.Vec2
+
 /**
  * Authored game content inspired by Manchester Airport. Coordinates, fixes, traffic and
  * procedures are deliberately fictionalized for playability and must not be used operationally.
@@ -86,7 +89,7 @@ object ManchesterContent {
             number = 1,
             id = FIRST_MISSION_ID,
             title = "First Contact",
-            briefing = "Select each arrival, draw a calm route to final and keep the picture tidy.",
+            briefing = "Select each arrival, set up its approach, then clear it to land while keeping traffic separated.",
             focus = TutorialFocus.SELECTION_AND_ROUTING,
             duration = 300,
             traffic = listOf(
@@ -235,6 +238,24 @@ object ManchesterContent {
     val missionIds: List<String> = authoredMissions.map(ScenarioDefinition::id)
 
     fun mission(id: String): ScenarioDefinition? = authoredMissions.firstOrNull { it.id == id }
+
+    /** A short, flyable final; the decorative outer gate can add too much beginner traffic time. */
+    fun finalApproachPoints(runwayEndId: String, interceptDistanceNm: Double = 2.5): List<NormalizedPoint> {
+        require(interceptDistanceNm > 0.0 && interceptDistanceNm.isFinite())
+        val runway = airport.runwayEnds.firstOrNull { it.id == runwayEndId }
+            ?: error("Unknown runway end $runwayEndId")
+        val intercept = Navigation.move(
+            position = Vec2(runway.threshold.x, runway.threshold.y),
+            headingDegrees = runway.headingDegrees + 180.0,
+            distanceNm = interceptDistanceNm,
+            mapWidthNm = airport.mapWidthNm,
+            mapHeightNm = airport.mapHeightNm,
+        )
+        return listOf(
+            NormalizedPoint(intercept.x, intercept.y),
+            runway.threshold,
+        )
+    }
 
     fun nextMissionId(afterMissionId: String): String? {
         val index = missionIds.indexOf(afterMissionId)

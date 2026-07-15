@@ -8,7 +8,7 @@
         <item quantity="other">%1$d out of 3 stars</item>
     </plurals>
     <string name="cd_terminal_radar">Manchester terminal radar. Select an aircraft, then drag to draw a route or use the route shortcut in its command panel.</string>
-    <string name="cd_aircraft_target">%1$s, altitude %2$s feet, speed %3$s knots, %4$s</string>
+    <string name="cd_aircraft_target">%1$s, heading %2$03d degrees, altitude %3$s feet, speed %4$s knots, %5$s</string>
     <string name="action_direct_to_fix">Direct %1$s</string>
     <string name="action_select_aircraft">Select %1$s</string>
     <string name="route_shortcut">Route shortcut</string>
@@ -159,7 +159,12 @@
     <string name="target_altitude">Target altitude</string>
     <string name="flight_level_value">%1$d FL</string>
     <string name="flight_level_code">FL%1$02d</string>
-    <string name="aircraft_data_line">%1$s %2$s  %3$d kt</string>
+    <string name="aircraft_data_line">%1$s %2$s  %3$d kt  HDG %4$03d°</string>
+    <string name="aircraft_heading_compact">HDG %1$03d°</string>
+    <string name="runway_heading_label">%1$s  %2$03d°</string>
+    <string name="compass_north">N 000°</string>
+    <string name="compass_east_west">W 270°  +  090° E</string>
+    <string name="compass_south">S 180°</string>
     <string name="aircraft_type_phase">%1$s • %2$s</string>
     <string name="feet_value">%1$s ft</string>
     <string name="target_speed">Target speed</string>
@@ -168,6 +173,8 @@
     <string name="clearance">Clearance</string>
     <string name="clear_takeoff">Clear for take-off</string>
     <string name="clear_land">Clear to land</string>
+    <string name="prepare_approach">Set up approach</string>
+    <string name="prepare_approach_caption">Route, descend and slow for runway %1$s</string>
     <string name="go_around">Go around</string>
     <string name="climb_feet">Climb %1$s ft</string>
     <string name="end_shift_debrief">End shift &amp; debrief</string>
@@ -201,13 +208,13 @@
     <string name="tutorial_identify_body">Every target shows a callsign, altitude and speed. Amber rings flag a predicted conflict.</string>
     <string name="tutorial_select_kicker">02 • Select</string>
     <string name="tutorial_select_title">Take control</string>
-    <string name="tutorial_select_body">Tap EXS72M on the radar to open its aircraft strip and command controls.</string>
+    <string name="tutorial_select_body">Tap an aircraft target or its callsign label to open the command controls.</string>
     <string name="tutorial_vector_kicker">03 • Vector</string>
     <string name="tutorial_vector_title">Choose a route</string>
-    <string name="tutorial_vector_body">Drag across the radar, or use the Direct route shortcut in the command panel.</string>
+    <string name="tutorial_vector_body">Draw a route onto the dashed final centreline, or use Set up approach in the command panel.</string>
     <string name="tutorial_clear_kicker">04 • Clear</string>
     <string name="tutorial_clear_title">Finish the approach</string>
-    <string name="tutorial_clear_body">Set altitude and speed, then clear the aircraft to land once it is stable and aligned.</string>
+    <string name="tutorial_clear_body">Set up the approach, then clear the aircraft to land. Sequence one aircraft at a time and keep the runway clear.</string>
     <string name="tutorial_progress">%1$d / %2$d</string>
     <string name="skip">Skip</string>
     <string name="take_control">Take control</string>
@@ -215,7 +222,7 @@
 
     <!-- Authored and engine-generated presentation text. Simulation data stays Android-free. -->
     <string name="mission_01_title">First Contact</string>
-    <string name="mission_01_briefing">Select each arrival, draw a calm route to final and keep the picture tidy.</string>
+    <string name="mission_01_briefing">Select each arrival, set up its approach, then clear it to land while keeping traffic separated.</string>
     <string name="mission_02_title">Level Headed</string>
     <string name="mission_02_briefing">Use altitude assignments to safely cross converging arrivals.</string>
     <string name="mission_03_title">Slow and Steady</string>

@@ -177,6 +177,8 @@ sealed interface GameAction {
     data class CommitRoute(val points: List<NormalizedPoint>) : GameAction
     data class SetTargetAltitude(val feet: Int) : GameAction
     data class SetTargetSpeed(val knots: Int) : GameAction
+    /** Builds a stable final route and selects safe landing altitude/speed targets. */
+    data object PrepareApproach : GameAction
     data class IssueClearance(val type: ClearanceType) : GameAction
     data object TogglePause : GameAction
     data class SetTimeScale(val multiplier: Int) : GameAction
