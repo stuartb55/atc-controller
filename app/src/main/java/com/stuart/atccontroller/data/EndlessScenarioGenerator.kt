@@ -9,11 +9,18 @@ import kotlin.math.min
  */
 object EndlessScenarioGenerator {
     private const val MIN_ARRIVAL_FIX_REUSE_SECONDS = 65
-    private val entryFixIds = ManchesterContent.airport.fixes.map { it.id }
     private val callsignPrefixes = listOf("NORTH", "CLOUD", "VECTOR", "EMBER", "ORBIT", "SUMMIT")
 
-    fun generate(seed: Long, stage: Int): ScenarioDefinition {
+    fun generate(
+        seed: Long,
+        stage: Int,
+        contentPackId: String = ContentRegistry.DEFAULT_PACK_ID,
+    ): ScenarioDefinition {
         require(stage >= 1) { "Endless stage must be at least one" }
+        val pack = requireNotNull(ContentRegistry.pack(contentPackId)) {
+            "Unknown content pack $contentPackId"
+        }
+        val entryFixIds = pack.airport.fixes.map { it.id }
 
         val intensity = min(stage, 100)
         val scenarioSeed = seed xor (stage.toLong() * -7046029254386353131L)
@@ -21,12 +28,9 @@ object EndlessScenarioGenerator {
         // Alternate direction between stages while allowing the player seed to choose the first.
         val usesRunway23 = ((seed xor stage.toLong()) and 1L) == 0L
         val dualRunways = intensity >= 4
-        val activeEnds = when {
-            usesRunway23 && dualRunways -> listOf("23R", "23L")
-            usesRunway23 -> listOf("23R")
-            dualRunways -> listOf("05L", "05R")
-            else -> listOf("05L")
-        }
+        val direction = if (usesRunway23) RunwayDirection.WESTERLY else RunwayDirection.EASTERLY
+        val directionalEnds = pack.runwayEnds(direction)
+        val activeEnds = if (dualRunways) directionalEnds else directionalEnds.take(1)
 
         val trafficCount = min(36, 8 + intensity * 2)
         val baseSpacingSeconds = max(18, 54 - intensity * 3)
@@ -68,7 +72,7 @@ object EndlessScenarioGenerator {
             ).toInt()
 
             TrafficSpawnDefinition(
-                id = "endless_${seed.toULong().toString(16)}_${stage}_$index",
+                id = generatedAircraftId(pack.id, seed, stage, index),
                 callsign = "${callsignPrefixes[index % callsignPrefixes.size]} $flightNumber",
                 intent = intent,
                 performanceClass = performanceClass,
@@ -105,13 +109,15 @@ object EndlessScenarioGenerator {
             twoStars = (maximumScore * 72) / 100,
             threeStars = (maximumScore * 88) / 100,
         )
-        val direction = if (usesRunway23) 240 else 60
+        val windDirection = pack.airport.runwayEnds
+            .first { it.id == activeEnds.first() }
+            .headingDegrees
 
         return ScenarioDefinition(
-            id = "manchester_endless_${seed.toULong().toString(16)}_$stage",
+            id = generatedScenarioId(pack.id, seed, stage),
             title = "Endless — Stage $stage",
             briefing = "Handle an escalating, seeded traffic wave. Fictional routes and simplified rules apply.",
-            airportId = ManchesterContent.AIRPORT_ID,
+            airportId = pack.airport.id,
             seed = scenarioSeed,
             difficulty = min(10, 3 + intensity),
             maxDurationSeconds = spawnTime + 480,
@@ -120,7 +126,7 @@ object EndlessScenarioGenerator {
                 departureEndIds = activeEnds.toSet(),
             ),
             weather = WeatherDefinition(
-                windDirectionDegrees = direction + random.nextInt(21) - 10,
+                windDirectionDegrees = Math.floorMod(windDirection + random.nextInt(21) - 10, 360),
                 windSpeedKnots = min(24, 6 + intensity + random.nextInt(5)),
                 visibilityKm = max(5, 20 - intensity / 2),
             ),
@@ -138,6 +144,20 @@ object EndlessScenarioGenerator {
             isEndless = true,
         )
     }
+
+    private fun generatedScenarioId(packId: String, seed: Long, stage: Int): String =
+        if (packId == ContentRegistry.DEFAULT_PACK_ID) {
+            "manchester_endless_${seed.toULong().toString(16)}_$stage"
+        } else {
+            "${packId}_endless_${seed.toULong().toString(16)}_$stage"
+        }
+
+    private fun generatedAircraftId(packId: String, seed: Long, stage: Int, index: Int): String =
+        if (packId == ContentRegistry.DEFAULT_PACK_ID) {
+            "endless_${seed.toULong().toString(16)}_${stage}_$index"
+        } else {
+            "${packId}_endless_${seed.toULong().toString(16)}_${stage}_$index"
+        }
 
     private fun performanceFor(stage: Int, random: DeterministicRandom): AircraftPerformanceClass {
         if (stage == 1) return AircraftPerformanceClass.MEDIUM

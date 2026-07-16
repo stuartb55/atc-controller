@@ -1,6 +1,5 @@
 package com.stuart.atccontroller.ui
 
-import androidx.annotation.StringRes
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -33,6 +32,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -104,7 +104,7 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                 GameStatusBar(state, compact, onAction)
                 state.replay?.let { replay ->
                     Spacer(Modifier.height(5.dp))
-                    ReplayControls(replay, onAction)
+                    ReplayControls(replay, state, onAction)
                 }
                 Spacer(Modifier.height(if (compact) 7.dp else 10.dp))
                 if (stacked) {
@@ -150,8 +150,8 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
 
             if (state.isPaused) {
                 PauseOverlay(state, onAction)
-            } else state.tutorialStep?.let { step ->
-                TutorialOverlay(step, onAction, compact)
+            } else state.training?.let { training ->
+                TutorialOverlay(training, onAction, compact)
             }
             if (state.abandonConfirmationVisible) {
                 AbandonConfirmationDialog(onAction)
@@ -161,21 +161,27 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
 }
 
 @Composable
-private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit) {
+private fun ReplayControls(
+    replay: ReplayUiModel,
+    state: GameUiState,
+    onAction: (GameAction) -> Unit,
+) {
     val colors = MaterialTheme.atcColors
     val replayStartDescription = stringResource(R.string.replay_seek_start)
     val replayEndDescription = stringResource(R.string.replay_seek_end)
+    val replayScrubDescription = stringResource(R.string.replay_scrubber)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = colors.panel,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, colors.cyan),
     ) {
-        Row(
-            Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        Column {
+            Row(
+                Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
             TextButton(onClick = { onAction(GameAction.ReplayTogglePlay) }) {
                 Text(
                     stringResource(if (replay.isPlaying) R.string.replay_pause else R.string.replay_play),
@@ -207,6 +213,16 @@ private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit
                 color = colors.white,
                 modifier = Modifier.weight(1f),
             )
+            replay.followedAircraftId?.let { aircraftId ->
+                Text(
+                    stringResource(
+                        R.string.replay_following,
+                        state.aircraft.firstOrNull { it.id == aircraftId }?.callsign ?: aircraftId,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.cyan,
+                )
+            }
             if (replay.verification != ReplayVerification.PENDING) {
                 Text(
                     stringResource(
@@ -228,6 +244,18 @@ private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit
                 TextButton(onClick = { onAction(GameAction.ReplaySetSpeed(speed)) }) {
                     Text("${speed}×", color = if (replay.speed == speed) colors.cyan else colors.muted)
                 }
+            }
+            }
+            if (replay.terminalTick > 0L) {
+                Slider(
+                    value = replay.tick.toFloat(),
+                    onValueChange = { tick -> onAction(GameAction.ReplaySeek(tick.toLong())) },
+                    valueRange = 0f..replay.terminalTick.toFloat(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp)
+                        .semantics { contentDescription = replayScrubDescription },
+                )
             }
         }
     }
@@ -271,12 +299,28 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                     maxLines = 1,
                 )
                 Text(
-                    state.selectedMission?.title ?: stringResource(R.string.active_sector),
+                    when {
+                        state.isDailySession -> stringResource(R.string.daily_shift_hud)
+                        state.isPracticeSession -> stringResource(R.string.custom_practice_shift)
+                        state.configurationIdentity != null -> stringResource(R.string.ranked_seeded_shift)
+                        else -> state.selectedMission?.title ?: stringResource(R.string.active_sector)
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     color = colors.white,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                state.configurationIdentity?.let { identity ->
+                    Text(
+                        stringResource(
+                            R.string.configuration_identity,
+                            identity.takeLast(16),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                        maxLines = 1,
+                    )
+                }
             }
         }
         val pauseButton: @Composable () -> Unit = {
@@ -568,8 +612,16 @@ private fun RadarDisplay(
                 }
             }
             val latestHitRegions by rememberUpdatedState(hitRegions)
-            val snapTargets = remember(state.selectedAircraft, state.fixes) {
+            val snapTargets = remember(
+                state.selectedAircraft,
+                state.fixes,
+                state.settings.routeSnappingEnabled,
+                state.routeSnappingAssistEnabled,
+            ) {
                 buildList {
+                    if (!state.settings.routeSnappingEnabled || !state.routeSnappingAssistEnabled) {
+                        return@buildList
+                    }
                     state.fixes.filter { it.kind != FixKind.APPROACH }.forEach { fix ->
                         add(
                             RadarSnapTarget(
@@ -1459,6 +1511,7 @@ private fun CommandPanel(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 OperationsOverview(state)
+                DynamicEventPanel(state, onAction)
                 FlightStripBoard(state, onAction)
                 EventFeed(state, onAction)
             }
@@ -1471,6 +1524,7 @@ private fun CommandPanel(
                     .padding(if (compact) 12.dp else 16.dp),
             ) {
                 OperationsOverview(state)
+                DynamicEventPanel(state, onAction)
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 FlightStripBoard(state, onAction)
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
@@ -1538,6 +1592,16 @@ private fun CommandPanel(
                 }
                 if (selected.phase == FlightPhase.DEPARTURE) {
                     if (state.runwayProceduresEnabled) {
+                        state.visibleRunways
+                            .filter { it.id != selected.assignedRunway }
+                            .forEach { runway ->
+                                SecondaryActionButton(
+                                    text = stringResource(R.string.cross_runway, runway.id),
+                                    onClick = { onAction(GameAction.CrossRunway(runway.id)) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(5.dp))
+                            }
                         ClearanceButton(
                             label = stringResource(R.string.line_up_wait),
                             caption = selected.assignedRunway
@@ -1573,17 +1637,19 @@ private fun CommandPanel(
                             Spacer(Modifier.height(5.dp))
                         }
                     }
-                    ClearanceButton(
-                        label = stringResource(R.string.prepare_approach),
-                        caption = stringResource(
-                            R.string.prepare_approach_caption,
-                            selected.assignedRunway
-                                ?: state.visibleRunways.firstOrNull()?.id
-                                ?: stringResource(R.string.not_available_short),
-                        ),
-                        accent = colors.cyan,
-                    ) { onAction(GameAction.PrepareApproach) }
-                    Spacer(Modifier.height(6.dp))
+                    if (state.approachSetupAssistEnabled) {
+                        ClearanceButton(
+                            label = stringResource(R.string.prepare_approach),
+                            caption = stringResource(
+                                R.string.prepare_approach_caption,
+                                selected.assignedRunway
+                                    ?: state.visibleRunways.firstOrNull()?.id
+                                    ?: stringResource(R.string.not_available_short),
+                            ),
+                            accent = colors.cyan,
+                        ) { onAction(GameAction.PrepareApproach) }
+                        Spacer(Modifier.height(6.dp))
+                    }
                     ClearanceButton(
                         label = stringResource(R.string.clear_land),
                         caption = selected.assignedRunway
@@ -1612,6 +1678,78 @@ private fun CommandPanel(
                     }
                 }
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                if (state.proceduralControlEnabled) {
+                    SectionLabel(stringResource(R.string.procedural_control))
+                    Spacer(Modifier.height(7.dp))
+                    if (selected.phase == FlightPhase.ARRIVAL || selected.phase == FlightPhase.APPROACH) {
+                        if (selected.handoffStatus == "OFFERED") {
+                            PrimaryActionButton(
+                                text = stringResource(R.string.accept_inbound_handoff),
+                                onClick = { onAction(GameAction.AcknowledgeInboundHandoff) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(6.dp))
+                        }
+                        if (selected.holdFixName != null) {
+                            Text(
+                                stringResource(
+                                    R.string.hold_active_status,
+                                    selected.holdFixName,
+                                    selected.holdSeconds,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.amber,
+                            )
+                            Spacer(Modifier.height(5.dp))
+                            SecondaryActionButton(
+                                text = stringResource(R.string.cancel_hold),
+                                onClick = { onAction(GameAction.CancelHold) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            state.fixes.take(4).chunked(2).forEach { fixes ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    fixes.forEach { fix ->
+                                        SecondaryActionButton(
+                                            text = stringResource(R.string.hold_at_fix, fix.name),
+                                            onClick = { onAction(GameAction.AssignHold(fix.name)) },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                    if (fixes.size == 1) Spacer(Modifier.weight(1f))
+                                }
+                                Spacer(Modifier.height(5.dp))
+                            }
+                        }
+                    } else if (selected.phase == FlightPhase.DEPARTURE) {
+                        SecondaryActionButton(
+                            text = stringResource(R.string.issue_exit_clearance),
+                            onClick = { onAction(GameAction.IssueExitClearance) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !selected.exitClearanceGranted,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        PrimaryActionButton(
+                            text = stringResource(R.string.initiate_handoff),
+                            onClick = { onAction(GameAction.InitiateOutboundHandoff) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = selected.exitClearanceGranted &&
+                                selected.handoffStatus !in setOf("REQUESTED", "ACKNOWLEDGED", "COMPLETED"),
+                        )
+                    }
+                    selected.handoffStatus?.let { status ->
+                        Spacer(Modifier.height(5.dp))
+                        Text(
+                            stringResource(
+                                R.string.handoff_status,
+                                status.lowercase().replace('_', ' '),
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (status == "TIMED_OUT") colors.red else colors.cyan,
+                        )
+                    }
+                    Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                }
                 FuelStatus(selected.fuelPercent)
                 Spacer(Modifier.height(10.dp))
                 EventFeed(state, onAction)
@@ -1622,6 +1760,42 @@ private fun CommandPanel(
                     colors = ButtonDefaults.textButtonColors(contentColor = colors.muted),
                 ) {
                     Text(stringResource(R.string.abandon_attempt).uppercase(), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DynamicEventPanel(state: GameUiState, onAction: (GameAction) -> Unit) {
+    val visible = state.dynamicEvents.takeLast(3)
+    if (visible.isEmpty()) return
+    val colors = MaterialTheme.atcColors
+    Spacer(Modifier.height(8.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        SectionLabel(stringResource(R.string.dynamic_events))
+        visible.forEach { event ->
+            Surface(
+                color = colors.night.copy(alpha = .7f),
+                shape = RoundedCornerShape(9.dp),
+                border = BorderStroke(1.dp, if (event.failed) colors.red else colors.amber),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                    Text(event.title, style = MaterialTheme.typography.labelMedium, color = colors.white)
+                    Text(
+                        "${event.affectedLabel} · ${event.lifecycle}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (event.failed) colors.red else colors.amber,
+                    )
+                    Text(event.recoveryGoal, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                    if (event.canAcknowledge) {
+                        Spacer(Modifier.height(5.dp))
+                        PrimaryActionButton(
+                            text = stringResource(R.string.accept_recovery),
+                            onClick = { onAction(GameAction.AcknowledgeDynamicEvent(event.id)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
             }
         }
@@ -1650,12 +1824,20 @@ private fun OperationsOverview(state: GameUiState) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    stringResource(
-                        R.string.mission_time_remaining,
-                        formatElapsed(state.missionTimeRemainingSeconds),
-                    ),
+                    when (state.missionClockState) {
+                        MissionClockState.ACTIVE -> stringResource(
+                            R.string.mission_time_remaining,
+                            formatElapsed(state.missionTimeRemainingSeconds),
+                        )
+                        MissionClockState.OVERDUE -> stringResource(R.string.mission_time_overdue)
+                        MissionClockState.FAILED -> stringResource(R.string.mission_time_failed)
+                    },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (state.missionOverdue) colors.red else colors.white,
+                    color = when (state.missionClockState) {
+                        MissionClockState.ACTIVE -> colors.white
+                        MissionClockState.OVERDUE -> colors.amber
+                        MissionClockState.FAILED -> colors.red
+                    },
                 )
             }
             Text(
@@ -1675,8 +1857,15 @@ private fun OperationsOverview(state: GameUiState) {
                 color = colors.muted,
             )
             state.objectiveProgress.forEach { objective ->
+                val label = stringResource(when (objective.kind) {
+                    ObjectiveProgressKind.SAFE_MOVEMENTS -> R.string.objective_safe_movements
+                    ObjectiveProgressKind.ARRIVALS -> R.string.objective_arrivals_landed
+                    ObjectiveProgressKind.DEPARTURES -> R.string.objective_departures_exited
+                    ObjectiveProgressKind.SCORE -> R.string.objective_score
+                    ObjectiveProgressKind.STRIKES -> R.string.objective_separation_strikes
+                })
                 Text(
-                    "${if (objective.passed) "✓" else "○"} ${objective.label} ${objective.current}/${objective.target}",
+                    "${if (objective.passed) "✓" else "○"} $label ${objective.current}/${objective.target}",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (objective.passed) colors.green else colors.muted,
                 )
@@ -1691,11 +1880,15 @@ private fun OperationsOverview(state: GameUiState) {
                 )
             } else {
                 state.upcomingTraffic.forEach { traffic ->
+                    val intent = stringResource(when (traffic.intent) {
+                        UpcomingTrafficIntent.ARRIVAL -> R.string.traffic_intent_arrival
+                        UpcomingTrafficIntent.DEPARTURE -> R.string.traffic_intent_departure
+                    })
                     Text(
                         stringResource(
                             R.string.traffic_due,
                             traffic.callsign,
-                            traffic.intent.lowercase().replaceFirstChar(Char::uppercase),
+                            intent,
                             traffic.secondsToEntry,
                         ),
                         style = MaterialTheme.typography.labelSmall,
@@ -1719,6 +1912,27 @@ private fun OperationsOverview(state: GameUiState) {
                     color = colors.muted,
                 )
             }
+            state.weatherImpact.changeNotice?.let { notice ->
+                Text(
+                    notice,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.amber,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            }
+            Text(
+                stringResource(
+                    if (state.weatherImpact.windDriftActive ||
+                        state.weatherImpact.reducedVisibilityActive
+                    ) {
+                        R.string.weather_effects_active
+                    } else {
+                        R.string.weather_display_only
+                    },
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
         }
     }
 }
@@ -1729,6 +1943,34 @@ private fun FlightStripBoard(state: GameUiState, onAction: (GameAction) -> Unit)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SectionLabel(stringResource(R.string.flight_strips))
         state.flightStrips.forEach { strip ->
+            val phase = stringResource(when (strip.phase) {
+                FlightPhase.ARRIVAL -> R.string.phase_arrival
+                FlightPhase.DEPARTURE -> R.string.phase_departure
+                FlightPhase.APPROACH -> R.string.phase_approach
+                FlightPhase.LANDED -> R.string.phase_landed
+                FlightPhase.EXITED -> R.string.phase_exited
+            })
+            val conflict = stringResource(when (strip.conflictLevel) {
+                ConflictLevel.NONE -> R.string.conflict_none
+                ConflictLevel.PREDICTED -> R.string.conflict_predicted_short
+                ConflictLevel.LOSS -> R.string.loss_of_separation
+            })
+            val wake = strip.wakeRequiredSeconds?.let { required ->
+                stringResource(
+                    R.string.flight_strip_wake_spacing,
+                    strip.wakeActualSeconds ?: 0,
+                    required,
+                )
+            }
+            val stripDescription = stringResource(
+                R.string.cd_flight_strip,
+                strip.callsign,
+                phase,
+                strip.runwayId ?: stringResource(R.string.not_assigned),
+                strip.fuelPercent,
+                conflict,
+                strip.clearance,
+            ) + wake?.let { ", $it" }.orEmpty()
             val accent = when (strip.conflictLevel) {
                 ConflictLevel.NONE -> if (strip.fuelPercent < 25) colors.amber else colors.greenDim
                 ConflictLevel.PREDICTED -> colors.amber
@@ -1741,7 +1983,7 @@ private fun FlightStripBoard(state: GameUiState, onAction: (GameAction) -> Unit)
                     .semantics {
                         role = Role.Button
                         selected = strip.aircraftId == state.selectedAircraftId
-                        contentDescription = "${strip.callsign}, ${strip.phase}, fuel ${strip.fuelPercent} percent"
+                        contentDescription = stripDescription
                     }
                     .clickable { onAction(GameAction.SelectFlightStrip(strip.aircraftId)) },
                 color = if (strip.aircraftId == state.selectedAircraftId) {
@@ -1756,13 +1998,36 @@ private fun FlightStripBoard(state: GameUiState, onAction: (GameAction) -> Unit)
                     Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(strip.callsign, style = MaterialTheme.typography.labelMedium, color = colors.white)
-                    Spacer(Modifier.weight(1f))
-                    Text(
-                        "${strip.runwayId ?: "—"} · ${strip.fuelPercent}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = accent,
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(strip.callsign, style = MaterialTheme.typography.labelMedium, color = colors.white)
+                        Text(
+                            stringResource(R.string.flight_strip_phase_clearance, phase, strip.clearance),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            stringResource(
+                                R.string.flight_strip_runway_fuel,
+                                strip.runwayId ?: stringResource(R.string.not_assigned_short),
+                                strip.fuelPercent,
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = accent,
+                        )
+                        Text(conflict, style = MaterialTheme.typography.labelSmall, color = accent)
+                        wake?.let {
+                            val wakeViolation = (strip.wakeActualSeconds ?: 0) <
+                                strip.wakeRequiredSeconds
+                            Text(
+                                text = (if (wakeViolation) "◆ " else "△ ") + it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (wakeViolation) colors.red else colors.amber,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -2104,24 +2369,18 @@ private fun PauseOverlay(state: GameUiState, onAction: (GameAction) -> Unit) {
     }
 }
 
-private data class TutorialCopy(
-    @StringRes val kicker: Int,
-    @StringRes val title: Int,
-    @StringRes val body: Int,
-)
-
-private val tutorialCopy = listOf(
-    TutorialCopy(R.string.tutorial_identify_kicker, R.string.tutorial_identify_title, R.string.tutorial_identify_body),
-    TutorialCopy(R.string.tutorial_select_kicker, R.string.tutorial_select_title, R.string.tutorial_select_body),
-    TutorialCopy(R.string.tutorial_vector_kicker, R.string.tutorial_vector_title, R.string.tutorial_vector_body),
-    TutorialCopy(R.string.tutorial_clear_kicker, R.string.tutorial_clear_title, R.string.tutorial_clear_body),
-)
-
 @Composable
-private fun TutorialOverlay(step: Int, onAction: (GameAction) -> Unit, compact: Boolean) {
+private fun TutorialOverlay(
+    training: TrainingUiModel,
+    onAction: (GameAction) -> Unit,
+    compact: Boolean,
+) {
     val colors = MaterialTheme.atcColors
-    val copy = tutorialCopy[step.coerceIn(tutorialCopy.indices)]
-    val paneDescription = stringResource(R.string.pane_tutorial_step, step + 1, tutorialCopy.size)
+    val paneDescription = stringResource(
+        R.string.pane_tutorial_step,
+        training.stepIndex + 1,
+        training.stepCount,
+    )
     Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
@@ -2140,30 +2399,66 @@ private fun TutorialOverlay(step: Int, onAction: (GameAction) -> Unit, compact: 
             ) {
                 Column(Modifier.padding(if (compact) 16.dp else 20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(stringResource(copy.kicker).uppercase(), style = MaterialTheme.typography.labelSmall, color = colors.cyan)
+                        Text(
+                            stringResource(
+                                R.string.training_step_kicker,
+                                training.stepIndex + 1,
+                            ).uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.cyan,
+                        )
                         Spacer(Modifier.weight(1f))
-                        Text(stringResource(R.string.tutorial_progress, step + 1, tutorialCopy.size), style = MaterialTheme.typography.labelMedium, color = colors.muted)
+                        Text(
+                            stringResource(
+                                R.string.tutorial_progress,
+                                training.stepIndex + 1,
+                                training.stepCount,
+                            ),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.muted,
+                        )
                     }
                     Spacer(Modifier.height(5.dp))
-                    Text(stringResource(copy.title), style = MaterialTheme.typography.titleLarge, color = colors.white)
-                    Text(stringResource(copy.body), style = MaterialTheme.typography.bodyMedium, color = colors.muted, maxLines = if (compact) 2 else 3)
-                    Text(stringResource(R.string.training_action_gate), style = MaterialTheme.typography.labelSmall, color = colors.cyan)
+                    Text(training.title, style = MaterialTheme.typography.titleLarge, color = colors.white)
+                    Text(
+                        training.prompt,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                        maxLines = if (compact) 3 else 4,
+                    )
+                    Text(training.actionGate, style = MaterialTheme.typography.labelSmall, color = colors.cyan)
+                    training.rejectionMessage?.let { rejection ->
+                        Text(
+                            rejection,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.amber,
+                        )
+                    }
                     Text(stringResource(R.string.training_disclaimer), style = MaterialTheme.typography.labelSmall, color = colors.muted)
                     Spacer(Modifier.height(13.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                            tutorialCopy.indices.forEach { index ->
+                            repeat(training.stepCount) { index ->
                                 Box(
                                     Modifier
-                                        .width(if (index == step) 20.dp else 6.dp)
+                                        .width(if (index == training.stepIndex) 20.dp else 6.dp)
                                         .height(5.dp)
-                                        .background(if (index == step) colors.cyan else colors.line, CircleShape),
+                                        .background(
+                                            if (index == training.stepIndex) colors.cyan else colors.line,
+                                            CircleShape,
+                                        ),
                                 )
                             }
                         }
                         Spacer(Modifier.weight(1f))
                         TextButton(onClick = { onAction(GameAction.DismissTutorial) }) {
-                            Text(stringResource(R.string.skip).uppercase(), style = MaterialTheme.typography.labelSmall, color = colors.muted)
+                            Text(
+                                stringResource(
+                                    if (training.isPractice) R.string.exit_lesson else R.string.skip,
+                                ).uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.muted,
+                            )
                         }
                     }
                 }

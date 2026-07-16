@@ -2,6 +2,8 @@ package com.stuart.atccontroller.ui
 
 import com.stuart.atccontroller.simulation.Conflict
 import com.stuart.atccontroller.simulation.ConflictKind
+import com.stuart.atccontroller.simulation.FailureReason
+import com.stuart.atccontroller.simulation.GameStatus
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -63,6 +65,38 @@ class PhaseZeroPresentationTest {
         assertEquals("05L", reciprocalRunwayId("23R"))
         assertEquals("23L", reciprocalRunwayId("05R"))
         assertEquals("27", reciprocalRunwayId("09"))
+    }
+
+    @Test
+    fun starForecastMovesBackwardWhenPenaltiesReduceTheScore() {
+        val thresholds = listOf(200, 300, 400)
+
+        assertEquals(StarForecastUiModel(1, 50), starForecastFor(250, thresholds))
+        assertEquals(StarForecastUiModel(0, 20), starForecastFor(180, thresholds))
+        assertEquals(StarForecastUiModel(3, null), starForecastFor(450, thresholds))
+    }
+
+    @Test
+    fun trafficCountdownUsesDeterministicCeilingAndNeverBecomesNegative() {
+        assertEquals(6, secondsUntilEntry(spawnAtSeconds = 10.0, elapsedSeconds = 4.1))
+        assertEquals(0, secondsUntilEntry(spawnAtSeconds = 10.0, elapsedSeconds = 10.0))
+        assertEquals(0, secondsUntilEntry(spawnAtSeconds = 10.0, elapsedSeconds = 11.0))
+    }
+
+    @Test
+    fun missionClockDistinguishesActiveOverdueAndFailedStates() {
+        assertEquals(
+            MissionClockState.ACTIVE,
+            missionClockState(GameStatus.RUNNING, null, 299.9, 300.0),
+        )
+        assertEquals(
+            MissionClockState.OVERDUE,
+            missionClockState(GameStatus.RUNNING, null, 300.0, 300.0),
+        )
+        assertEquals(
+            MissionClockState.FAILED,
+            missionClockState(GameStatus.FAILED, FailureReason.TIME_EXPIRED, 300.0, 300.0),
+        )
     }
 
     private fun conflict(

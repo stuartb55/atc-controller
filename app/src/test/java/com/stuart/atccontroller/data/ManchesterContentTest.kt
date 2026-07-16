@@ -61,14 +61,20 @@ class ManchesterContentTest {
     }
 
     @Test
-    fun allEightAuthoredMissionsAreValidAndProgressive() {
+    fun allAuthoredMissionsAreValidAndIntroduceOperationalDepthProgressively() {
         val missions = ManchesterContent.authoredMissions
 
-        assertEquals(8, missions.size)
-        assertEquals((1..8).toList(), missions.map { it.difficulty })
+        assertEquals(12, missions.size)
+        assertEquals((1..10).toList() + listOf(10, 10), missions.map { it.difficulty })
         assertEquals(TutorialFocus.SELECTION_AND_ROUTING, missions.first().tutorialFocus)
-        assertEquals(TutorialFocus.PARALLEL_RUNWAYS, missions.last().tutorialFocus)
-        assertTrue(missions.zipWithNext().all { (first, second) -> first.traffic.size <= second.traffic.size })
+        assertEquals(TutorialFocus.DYNAMIC_EVENTS, missions.last().tutorialFocus)
+        assertTrue(missions.take(8).zipWithNext().all { (first, second) ->
+            first.traffic.size <= second.traffic.size
+        })
+        assertEquals(1, missions[8].mechanicVersions.wakeTurbulence)
+        assertEquals(1, missions[9].mechanicVersions.reducedVisibility)
+        assertEquals(1, missions[10].mechanicVersions.proceduralControl)
+        assertEquals(5, missions[11].dynamicEvents.size)
         missions.forEach { mission ->
             val result = ScenarioValidator.validate(mission)
             assertTrue("${mission.id}: ${result.issues}", result.isValid)

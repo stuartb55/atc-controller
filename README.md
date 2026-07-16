@@ -1,18 +1,19 @@
 # Manchester Approach
 
-An offline Android air traffic control strategy game. Draw routes, assign altitude and speed, and sequence arrivals and departures around a simplified Manchester Airport terminal area.
+An offline Android air traffic control strategy game. Draw routes, issue simplified clearances, and sequence arrivals and departures across two deterministic sector packs.
 
 New controller? Start with the [complete how-to-play guide](HOW_TO_PLAY.md), including a
 step-by-step walkthrough of the first mission.
 
 ## Included gameplay
 
-- Eight progressive missions plus an escalating endless shift
-- Deterministic radar simulation with headings, routes, altitude, speed, separation, fuel, runway occupancy and go-arounds
-- Arrival, departure, line-up and take-off clearances across both runway directions
-- Touch route drawing, aircraft command panels, pause and simulation-speed controls
-- Scoring, star ratings, unlock progression, local high scores and an exact command-replay save/continue system
-- First-shift tutorial, high-contrast labels, label scaling, reduced motion, trails, audio and haptic settings
+- Twelve progressive Manchester missions and a four-mission original fictional coastal campaign
+- Pack-aware custom, Daily and escalating endless shifts with checksummed offline share codes
+- Deterministic routes, wind drift, reduced visibility, wake spacing, fuel, holds, handoffs and runway occupancy
+- Runway/approach assignment, line-up, clearance cancellation, runway crossing, take-off, landing and go-around controls
+- Authored runway changes, priorities, closures, rejected take-offs and equipment outages
+- Live objectives, traffic horizon, star forecast, flight strips, event feed, detailed debrief and verified replay
+- Local career/service records, Training Academy, accessibility controls, audio and haptic settings
 
 ## Build
 
@@ -29,4 +30,4 @@ bundles are gated by the secret-safe CI process in [RELEASING.md](RELEASING.md).
 
 ## Aviation data notice
 
-The airport layout is an intentionally simplified entertainment representation informed by the UK AIP snapshot dated 16 April 2026. It is not current operational data and must not be used for navigation or training. NATS and Manchester Airport do not endorse this game.
+The Manchester layout is an intentionally simplified entertainment representation informed by the UK AIP snapshot dated 16 April 2026. Harbour Approach is an original fictional crossing-runway layout. Neither pack is current operational data, and neither may be used for navigation, operational decisions or ATC training. NATS and Manchester Airport do not endorse this game.

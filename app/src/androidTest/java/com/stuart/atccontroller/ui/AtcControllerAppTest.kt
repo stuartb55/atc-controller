@@ -71,8 +71,8 @@ class AtcControllerAppTest {
             }
         }
 
-        val exsLabel = hasContentDescription("EXS72M, altitude", substring = true)
-        composeRule.onNode(exsLabel).assertIsDisplayed().performSemanticsAction(SemanticsActions.OnClick)
+        val exsLabel = hasContentDescription("EXS72M, heading", substring = true)
+        composeRule.onNode(exsLabel).performSemanticsAction(SemanticsActions.OnClick)
         composeRule.runOnIdle { assertEquals("EXS72M", viewModel.uiState.selectedAircraftId) }
         composeRule.onNode(exsLabel).assertIsSelected()
         composeRule

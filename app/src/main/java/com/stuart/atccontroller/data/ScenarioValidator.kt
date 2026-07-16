@@ -27,7 +27,9 @@ data class ScenarioValidationResult(
 object ScenarioValidator {
     fun validate(
         scenario: ScenarioDefinition,
-        airport: AirportDefinition = ManchesterContent.airport,
+        airport: AirportDefinition = requireNotNull(ContentRegistry.airport(scenario.airportId)) {
+            "Unknown airport ${scenario.airportId}"
+        },
     ): ScenarioValidationResult {
         val issues = validateAirport(airport).toMutableList()
         fun issue(code: String, path: String, message: String) {
@@ -153,6 +155,89 @@ object ScenarioValidator {
                 issue("insufficient_completion_time", "scenario.maxDurationSeconds", "must allow at least 30 seconds after the final spawn")
             }
         }
+        val trafficById = scenario.traffic.associateBy(TrafficSpawnDefinition::id)
+        duplicateValues(scenario.dynamicEvents.map(DynamicEventDefinition::id)).forEach { duplicate ->
+            issue("duplicate_dynamic_event", "scenario.dynamicEvents", "duplicate id $duplicate")
+        }
+        scenario.dynamicEvents.forEachIndexed { index, event ->
+            val path = "scenario.dynamicEvents[$index]"
+            if (event.id.isBlank()) issue("blank_dynamic_event", "$path.id", "must not be blank")
+            if (event.warningLeadSeconds < 5) {
+                issue("event_warning_too_short", "$path.warningLeadSeconds", "must allow at least five seconds")
+            }
+            if (event.triggerSeconds < event.warningLeadSeconds ||
+                event.triggerSeconds + event.recoveryWindowSeconds > scenario.maxDurationSeconds
+            ) {
+                issue("event_timing_invalid", path, "warning, trigger, and recovery must fit the scenario")
+            }
+            if (event.recoveryWindowSeconds < 15) {
+                issue("event_recovery_too_short", "$path.recoveryWindowSeconds", "must allow a recovery path")
+            }
+            val affectedTraffic = event.aircraftId?.let(trafficById::get)
+            if (event.aircraftId != null && affectedTraffic == null) {
+                issue("event_unknown_aircraft", "$path.aircraftId", "must reference scheduled traffic")
+            }
+            if (event.runwayEndId != null && event.runwayEndId !in (arrivalRunways + departureRunways)) {
+                issue("event_unknown_runway", "$path.runwayEndId", "must reference an active runway")
+            }
+            when (event.type) {
+                DynamicEventTypeDefinition.LOW_FUEL_PRIORITY,
+                DynamicEventTypeDefinition.PRIORITY_FLIGHT -> if (affectedTraffic == null) {
+                    issue("event_missing_aircraft", "$path.aircraftId", "event requires an aircraft")
+                }
+                DynamicEventTypeDefinition.REJECTED_TAKEOFF -> if (
+                    affectedTraffic?.intent != TrafficIntent.DEPARTURE
+                ) {
+                    issue("event_invalid_departure", "$path.aircraftId", "must reference a departure")
+                }
+                DynamicEventTypeDefinition.RUNWAY_CLOSURE -> if (event.runwayEndId == null) {
+                    issue("event_missing_runway", "$path.runwayEndId", "closure requires a runway")
+                }
+                DynamicEventTypeDefinition.EQUIPMENT_OUTAGE -> Unit
+            }
+        }
+        if (scenario.dynamicEvents.isNotEmpty() && scenario.mechanicVersions.dynamicEvents == 0) {
+            issue("events_without_mechanic", "scenario.dynamicEvents", "dynamic event mechanics must be enabled")
+        }
+        duplicateValues(scenario.weatherChanges.map(WeatherChangeDefinition::id)).forEach { duplicate ->
+            issue("duplicate_weather_change", "scenario.weatherChanges", "duplicate id $duplicate")
+        }
+        if (scenario.weatherChanges.zipWithNext().any { (first, second) ->
+                first.effectiveSeconds >= second.effectiveSeconds
+            }
+        ) {
+            issue("weather_changes_not_ordered", "scenario.weatherChanges", "must be strictly ordered")
+        }
+        scenario.weatherChanges.forEachIndexed { index, change ->
+            val path = "scenario.weatherChanges[$index]"
+            if (change.id.isBlank()) issue("blank_weather_change", "$path.id", "must not be blank")
+            if (change.warningLeadSeconds < 15 ||
+                change.effectiveSeconds <= change.warningLeadSeconds ||
+                change.effectiveSeconds >= scenario.maxDurationSeconds
+            ) {
+                issue("weather_change_timing", path, "must provide warning and occur within the shift")
+            }
+            if (change.weather.windDirectionDegrees !in 0..359 ||
+                change.weather.windSpeedKnots !in 0..60 ||
+                change.weather.visibilityKm !in 1..100
+            ) {
+                issue("weather_change_conditions", "$path.weather", "contains invalid conditions")
+            }
+            if (change.activeRunwayEndIds.isEmpty() ||
+                change.activeRunwayEndIds.any { it !in runwayEnds }
+            ) {
+                issue("weather_change_runways", "$path.activeRunwayEndIds", "must reference runway ends")
+            }
+            val repeatedPhysical = change.activeRunwayEndIds.mapNotNull(runwayEnds::get)
+                .groupBy(RunwayEndDefinition::physicalRunwayId)
+                .values.any { ends -> ends.map(RunwayEndDefinition::id).distinct().size > 1 }
+            if (repeatedPhysical) {
+                issue("weather_change_reciprocals", "$path.activeRunwayEndIds", "cannot activate reciprocal ends")
+            }
+        }
+        if (scenario.weatherChanges.isNotEmpty() && scenario.mechanicVersions.weatherChanges == 0) {
+            issue("weather_changes_without_mechanic", "scenario.weatherChanges", "weather changes must be enabled")
+        }
 
         val arrivalCount = scenario.traffic.count { it.intent == TrafficIntent.ARRIVAL }
         val departureCount = scenario.traffic.size - arrivalCount
@@ -177,11 +262,42 @@ object ScenarioValidator {
 
         val scoring = scenario.scoring
         with(scenario.mechanicVersions) {
-            if (listOf(runwayProcedures, wakeTurbulence, windDrift, reducedVisibility).any { it < 0 }) {
+            if (
+                listOf(
+                    runwayProcedures,
+                    wakeTurbulence,
+                    windDrift,
+                    reducedVisibility,
+                    proceduralControl,
+                    dynamicEvents,
+                    weatherChanges,
+                ).any { it < 0 }
+            ) {
                 issue("invalid_mechanic_version", "scenario.mechanicVersions", "versions must not be negative")
             }
             if (wakeTurbulence !in 0..1) {
                 issue("unknown_wake_version", "scenario.mechanicVersions.wakeTurbulence", "only version 1 is supported")
+            }
+            if (proceduralControl !in 0..1) {
+                issue(
+                    "unknown_procedural_version",
+                    "scenario.mechanicVersions.proceduralControl",
+                    "only version 1 is supported",
+                )
+            }
+            if (dynamicEvents !in 0..1) {
+                issue(
+                    "unknown_dynamic_event_version",
+                    "scenario.mechanicVersions.dynamicEvents",
+                    "only version 1 is supported",
+                )
+            }
+            if (weatherChanges !in 0..1) {
+                issue(
+                    "unknown_weather_change_version",
+                    "scenario.mechanicVersions.weatherChanges",
+                    "only version 1 is supported",
+                )
             }
         }
         val scoringValues = listOf(
@@ -196,6 +312,9 @@ object ScenarioValidator {
             scoring.missedExitPenalty,
             scoring.runwayProcedurePenalty,
             scoring.wakeViolationPenalty,
+            scoring.proceduralControlPenalty,
+            scoring.dynamicEventSuccessBonus,
+            scoring.dynamicEventFailurePenalty,
         )
         if (scoringValues.any { it < 0 }) {
             issue("negative_scoring_value", "scenario.scoring", "point and penalty values must not be negative")
@@ -316,7 +435,7 @@ object ScenarioValidator {
             movementPoints.toLong() +
                 maximumRouteEfficiencyBonusPoints +
                 maximumTimeBonusPoints
-        } + completionBonus
+        } + completionBonus + scenario.dynamicEvents.size.toLong() * dynamicEventSuccessBonus
     }
 
     private fun validatePoint(

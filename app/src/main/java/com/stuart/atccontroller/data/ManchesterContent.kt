@@ -93,7 +93,7 @@ object ManchesterContent {
             focus = TutorialFocus.SELECTION_AND_ROUTING,
             duration = 300,
             traffic = listOf(
-                arrival("m01_a1", "NORTH 201", 5, "GAME_NORTHEAST", altitude = 4_000),
+                arrival("m01_a1", "NORTH 201", 0, "GAME_NORTHEAST", altitude = 4_000),
                 arrival("m01_a2", "CLOUD 314", 55, "GAME_NORTH", altitude = 5_000),
                 arrival("m01_a3", "VECTOR 122", 115, "GAME_EAST", altitude = 4_000),
             ),
@@ -232,6 +232,156 @@ object ManchesterContent {
                 arrival("m08_a8", "CLOUD 906", 355, "GAME_NORTH", runway = "23L", altitude = 5_000),
             ),
             thresholds = StarThresholds(1_000, 1_350, 1_650),
+            mechanicVersions = MechanicVersionDefinition(runwayProcedures = 1, wakeTurbulence = 1),
+        ),
+        mission(
+            number = 9,
+            id = "manchester_09_heavy_spacing",
+            title = "Heavy Spacing",
+            briefing = "Sequence heavy leaders and light followers using the displayed simplified wake interval.",
+            focus = TutorialFocus.WAKE_TURBULENCE,
+            duration = 760,
+            traffic = listOf(
+                departure("m09_d1", "SUMMIT 901", 5, "GAME_WEST", performance = AircraftPerformanceClass.HEAVY),
+                departure("m09_d2", "ORBIT 214", 35, "GAME_NORTH", performance = AircraftPerformanceClass.LIGHT),
+                arrival("m09_a1", "VECTOR 778", 70, "GAME_NORTHEAST", altitude = 5_000, performance = AircraftPerformanceClass.HEAVY),
+                arrival("m09_a2", "CLOUD 319", 112, "GAME_EAST", altitude = 6_000, performance = AircraftPerformanceClass.LIGHT),
+                departure("m09_d3", "EMBER 640", 180, "GAME_NORTHWEST"),
+                arrival("m09_a3", "NORTH 452", 225, "GAME_NORTH", altitude = 5_000),
+            ),
+            thresholds = StarThresholds(430, 610, 760),
+            mechanicVersions = MechanicVersionDefinition(runwayProcedures = 1, wakeTurbulence = 1),
+        ),
+        mission(
+            number = 10,
+            id = "manchester_10_weather_window",
+            title = "Weather Window",
+            briefing = "Allow for deterministic wind drift and stabilize arrivals earlier in reduced visibility.",
+            focus = TutorialFocus.WEATHER_OPERATIONS,
+            duration = 760,
+            weather = WeatherDefinition(285, 16, 5),
+            configuration = RunwayConfigurationDefinition(
+                arrivalEndIds = setOf("23R", "23L"),
+                departureEndIds = setOf("23R", "23L"),
+            ),
+            traffic = listOf(
+                arrival("m10_a1", "ORBIT 510", 5, "GAME_NORTHEAST", altitude = 5_000),
+                arrival("m10_a2", "SUMMIT 332", 55, "GAME_EAST", altitude = 6_000, performance = AircraftPerformanceClass.LIGHT),
+                departure("m10_d1", "CLOUD 745", 100, "GAME_WEST"),
+                arrival("m10_a3", "EMBER 281", 150, "GAME_NORTH", altitude = 5_000, performance = AircraftPerformanceClass.HEAVY),
+                departure("m10_d2", "VECTOR 604", 210, "GAME_NORTHWEST"),
+                arrival("m10_a4", "NORTH 919", 265, "GAME_EAST", altitude = 6_000),
+            ),
+            thresholds = StarThresholds(430, 600, 740),
+            mechanicVersions = MechanicVersionDefinition(
+                runwayProcedures = 1,
+                windDrift = 1,
+                reducedVisibility = 1,
+                weatherChanges = 1,
+            ),
+            weatherChanges = listOf(
+                WeatherChangeDefinition(
+                    id = "easterly_change",
+                    effectiveSeconds = 300,
+                    warningLeadSeconds = 60,
+                    weather = WeatherDefinition(70, 12, 8),
+                    activeRunwayEndIds = setOf("05L", "05R"),
+                ),
+            ),
+        ),
+        mission(
+            number = 11,
+            id = "manchester_11_hold_and_handoff",
+            title = "Hold and Handoff",
+            briefing = "Accept inbound handoffs, use fix holds to absorb delay, then clear and hand departures to the exit sector.",
+            focus = TutorialFocus.PROCEDURAL_CONTROL,
+            duration = 820,
+            traffic = listOf(
+                arrival("m11_a1", "SUMMIT 117", 5, "GAME_NORTHEAST", altitude = 6_000),
+                departure("m11_d1", "ORBIT 482", 35, "GAME_WEST"),
+                arrival("m11_a2", "CLOUD 630", 70, "GAME_EAST", altitude = 5_000),
+                departure("m11_d2", "EMBER 905", 120, "GAME_NORTHWEST"),
+                arrival("m11_a3", "VECTOR 241", 160, "GAME_NORTH", altitude = 6_000),
+                departure("m11_d3", "NORTH 758", 220, "GAME_WEST"),
+            ),
+            thresholds = StarThresholds(430, 610, 760),
+            mechanicVersions = MechanicVersionDefinition(
+                runwayProcedures = 1,
+                proceduralControl = 1,
+            ),
+        ),
+        mission(
+            number = 12,
+            id = "manchester_12_recovery_shift",
+            title = "Recovery Shift",
+            briefing = "Respond to a deterministic schedule of priority traffic, a rejected takeoff, a closure, and a prediction outage.",
+            focus = TutorialFocus.DYNAMIC_EVENTS,
+            duration = 900,
+            configuration = RunwayConfigurationDefinition(
+                arrivalEndIds = setOf("23R", "23L"),
+                departureEndIds = setOf("23R", "23L"),
+            ),
+            traffic = listOf(
+                departure("m12_d1", "ORBIT 608", 5, "GAME_WEST", runway = "23L"),
+                arrival("m12_a1", "SUMMIT 911", 10, "GAME_NORTHEAST", runway = "23R", altitude = 5_000, fuelSeconds = 300),
+                departure("m12_d2", "VECTOR 337", 55, "GAME_NORTHWEST", runway = "23R"),
+                arrival("m12_a2", "CLOUD 724", 80, "GAME_EAST", runway = "23L", altitude = 6_000),
+                arrival("m12_a3", "EMBER 415", 130, "GAME_NORTH", runway = "23R", altitude = 5_000),
+                departure("m12_d3", "NORTH 862", 190, "GAME_WEST", runway = "23L"),
+            ),
+            thresholds = StarThresholds(470, 680, 850),
+            mechanicVersions = MechanicVersionDefinition(
+                runwayProcedures = 1,
+                wakeTurbulence = 1,
+                windDrift = 1,
+                dynamicEvents = 1,
+            ),
+            dynamicEvents = listOf(
+                DynamicEventDefinition(
+                    "rejected_takeoff",
+                    DynamicEventTypeDefinition.REJECTED_TAKEOFF,
+                    15,
+                    10,
+                    70,
+                    DynamicRecoveryGoalDefinition.RESEQUENCE_DEPARTURE,
+                    aircraftId = "m12_d1",
+                ),
+                DynamicEventDefinition(
+                    "low_fuel_priority",
+                    DynamicEventTypeDefinition.LOW_FUEL_PRIORITY,
+                    45,
+                    15,
+                    150,
+                    DynamicRecoveryGoalDefinition.LAND_PRIORITY_AIRCRAFT,
+                    aircraftId = "m12_a1",
+                ),
+                DynamicEventDefinition(
+                    "runway_closure",
+                    DynamicEventTypeDefinition.RUNWAY_CLOSURE,
+                    95,
+                    20,
+                    90,
+                    DynamicRecoveryGoalDefinition.KEEP_RUNWAY_CLEAR,
+                    runwayEndId = "23R",
+                ),
+                DynamicEventDefinition(
+                    "prediction_outage",
+                    DynamicEventTypeDefinition.EQUIPMENT_OUTAGE,
+                    150,
+                    15,
+                    75,
+                    DynamicRecoveryGoalDefinition.CONTROL_WITHOUT_PREDICTION,
+                ),
+                DynamicEventDefinition(
+                    "priority_flight",
+                    DynamicEventTypeDefinition.PRIORITY_FLIGHT,
+                    210,
+                    20,
+                    150,
+                    DynamicRecoveryGoalDefinition.EXPEDITE_PRIORITY_FLIGHT,
+                    aircraftId = "m12_a2",
+                ),
+            ),
         ),
     )
 
@@ -279,6 +429,12 @@ object ManchesterContent {
         duration: Int,
         traffic: List<TrafficSpawnDefinition>,
         thresholds: StarThresholds,
+        weather: WeatherDefinition? = null,
+        mechanicVersions: MechanicVersionDefinition = MechanicVersionDefinition(
+            runwayProcedures = if (number >= 6) 1 else 0,
+        ),
+        dynamicEvents: List<DynamicEventDefinition> = emptyList(),
+        weatherChanges: List<WeatherChangeDefinition> = emptyList(),
         configuration: RunwayConfigurationDefinition = RunwayConfigurationDefinition(
             arrivalEndIds = setOf("23R"),
             departureEndIds = setOf("23R"),
@@ -292,7 +448,7 @@ object ManchesterContent {
             briefing = briefing,
             airportId = AIRPORT_ID,
             seed = 10_000L + number,
-            difficulty = number,
+            difficulty = minOf(number, 10),
             // Leave at least six minutes after the final spawn. Edge fixes can be more than
             // twenty miles from touchdown and tutorial players need time to experiment.
             maxDurationSeconds = maxOf(
@@ -300,7 +456,7 @@ object ManchesterContent {
                 traffic.maxOfOrNull { it.spawnAtSeconds }?.plus(360) ?: duration,
             ),
             runwayConfiguration = configuration,
-            weather = WeatherDefinition(240, 8 + (number / 3), 20),
+            weather = weather ?: WeatherDefinition(240, 8 + (number / 3), 20),
             traffic = traffic.sortedBy(TrafficSpawnDefinition::spawnAtSeconds),
             objectives = buildList {
                 add(ObjectiveDefinition(ObjectiveType.COMPLETE_SAFE_MOVEMENTS, traffic.size, "Complete all ${traffic.size} movements"))
@@ -317,6 +473,9 @@ object ManchesterContent {
                 ),
             ),
             tutorialFocus = focus,
+            mechanicVersions = mechanicVersions,
+            dynamicEvents = dynamicEvents,
+            weatherChanges = weatherChanges,
         )
     }
 
@@ -329,6 +488,7 @@ object ManchesterContent {
         altitude: Int,
         speed: Int = 220,
         performance: AircraftPerformanceClass = AircraftPerformanceClass.MEDIUM,
+        fuelSeconds: Int = 720,
     ) = TrafficSpawnDefinition(
         id = id,
         callsign = callsign,
@@ -339,7 +499,7 @@ object ManchesterContent {
         runwayEndId = runway,
         initialAltitudeFeet = altitude,
         initialSpeedKnots = speed,
-        fuelSeconds = 720,
+        fuelSeconds = fuelSeconds,
     )
 
     private fun departure(

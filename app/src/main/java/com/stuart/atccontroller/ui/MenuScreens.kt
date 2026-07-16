@@ -1,5 +1,9 @@
 package com.stuart.atccontroller.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -30,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -49,6 +54,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -296,6 +302,27 @@ private fun HomeSectorCard(state: GameUiState, compact: Boolean, modifier: Modif
                     style = MaterialTheme.typography.titleMedium,
                 )
             }
+            Spacer(Modifier.height(7.dp))
+            Text(
+                pluralStringResource(
+                    R.plurals.service_record_summary,
+                    state.serviceRecord.totalSafeMovements,
+                    state.serviceRecord.totalSafeMovements,
+                    state.serviceRecord.currentSafeStreak,
+                    state.serviceRecord.achievementCount,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.cyan,
+            )
+            if (state.serviceRecord.recommendation.isNotBlank()) {
+                Text(
+                    state.serviceRecord.recommendation,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -367,6 +394,11 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     )
                 },
             )
+            SecondaryActionButton(
+                text = stringResource(R.string.custom_shift_setup),
+                onClick = { onAction(GameAction.Navigate(AppScreen.CUSTOM_SHIFT)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
             Spacer(Modifier.height(if (compact) 12.dp else 20.dp))
             if (narrow) {
                 LazyColumn(
@@ -401,6 +433,9 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                                 compact = true,
                                 scrollContent = false,
                                 onStart = { onAction(GameAction.StartSelectedMission) },
+                                onTraining = mission.takeIf { it.trainingAvailable }?.let {
+                                    { onAction(GameAction.StartTrainingLesson(it.id)) }
+                                },
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 330.dp),
                             )
                         }
@@ -435,6 +470,9 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         mission = mission,
                         compact = compact,
                         onStart = { onAction(GameAction.StartSelectedMission) },
+                        onTraining = mission.takeIf { it.trainingAvailable }?.let {
+                            { onAction(GameAction.StartTrainingLesson(it.id)) }
+                        },
                         modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
@@ -442,6 +480,376 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
         }
     }
 }
+
+@Composable
+fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    val context = LocalContext.current
+    val shareChooserTitle = stringResource(R.string.share_configuration)
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            ScreenHeader(
+                eyebrow = stringResource(R.string.offline_practice),
+                title = stringResource(R.string.custom_shift_setup),
+                onBack = { onAction(GameAction.Navigate(AppScreen.MISSIONS)) },
+            )
+        }
+        item {
+            Text(
+                stringResource(R.string.custom_shift_disclaimer),
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.muted,
+            )
+        }
+        item {
+            Surface(
+                color = colors.panel,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, colors.cyan),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    SectionLabel(stringResource(R.string.daily_shift_hud))
+                    Text(
+                        stringResource(R.string.daily_local_explanation, configuration.dailyDate),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted,
+                    )
+                    Text(
+                        if (configuration.dailyCompleted) {
+                            stringResource(
+                                R.string.daily_completed_summary,
+                                configuration.dailyBestScore ?: 0,
+                                configuration.dailyStreak,
+                            )
+                        } else {
+                            stringResource(R.string.daily_not_completed)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                    )
+                    PrimaryActionButton(
+                        stringResource(R.string.start_daily),
+                        { onAction(GameAction.StartDailyShift) },
+                        Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+        item {
+            OutlinedTextField(
+                value = configuration.seed,
+                onValueChange = { onAction(GameAction.SetCustomSeed(it.filter(Char::isDigit).take(18))) },
+                label = { Text(stringResource(R.string.seed)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.content_pack),
+                configuration.contentPackName,
+                { onAction(GameAction.CycleCustomContentPack(-1)) },
+                { onAction(GameAction.CycleCustomContentPack(1)) },
+            )
+            Text(
+                configuration.airportName,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.traffic_density),
+                localizedConfigurationValue(configuration.density),
+                { onAction(GameAction.CycleCustomDensity(-1)) },
+                { onAction(GameAction.CycleCustomDensity(1)) },
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.arrival_mix),
+                stringResource(R.string.percent_value, configuration.arrivalPercent),
+                { onAction(GameAction.SetCustomArrivalPercent(configuration.arrivalPercent - 10)) },
+                { onAction(GameAction.SetCustomArrivalPercent(configuration.arrivalPercent + 10)) },
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.runway_direction),
+                configuration.runwayEndLabel,
+                { onAction(GameAction.CycleCustomRunwayDirection(-1)) },
+                { onAction(GameAction.CycleCustomRunwayDirection(1)) },
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.weather_preset),
+                localizedConfigurationValue(configuration.weatherPreset),
+                { onAction(GameAction.CycleCustomWeather(-1)) },
+                { onAction(GameAction.CycleCustomWeather(1)) },
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.fuel_pressure),
+                localizedConfigurationValue(configuration.fuelPressure),
+                { onAction(GameAction.CycleCustomFuelPressure(-1)) },
+                { onAction(GameAction.CycleCustomFuelPressure(1)) },
+            )
+        }
+        item {
+            ConfigCycleRow(
+                stringResource(R.string.strike_limit),
+                configuration.strikeLimit.toString(),
+                { onAction(GameAction.SetCustomStrikeLimit(configuration.strikeLimit - 1)) },
+                { onAction(GameAction.SetCustomStrikeLimit(configuration.strikeLimit + 1)) },
+            )
+        }
+        item {
+            SettingToggle(
+                stringResource(R.string.assist_route_snapping),
+                stringResource(R.string.assist_practice_only),
+                configuration.routeSnapping,
+            ) { onAction(GameAction.ToggleCustomRouteSnapping) }
+            SettingToggle(
+                stringResource(R.string.assist_approach_setup),
+                stringResource(R.string.assist_practice_only),
+                configuration.approachSetup,
+            ) { onAction(GameAction.ToggleCustomApproachSetup) }
+            SettingToggle(
+                stringResource(R.string.assist_conflict_prediction),
+                stringResource(R.string.assist_practice_only),
+                configuration.conflictPrediction,
+            ) { onAction(GameAction.ToggleCustomConflictPrediction) }
+        }
+        item {
+            Surface(
+                color = colors.panel,
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, colors.line),
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    SectionLabel(stringResource(R.string.configuration_preview))
+                    Text(
+                        stringResource(
+                            R.string.custom_traffic_preview,
+                            configuration.previewTraffic,
+                            configuration.previewArrivals,
+                            configuration.previewDepartures,
+                        ),
+                        color = colors.white,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        stringResource(
+                            R.string.configuration_identity,
+                            configuration.configurationIdentity,
+                        ),
+                        color = colors.cyan,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+        }
+        item {
+            SectionLabel(stringResource(R.string.share_configuration))
+            Text(
+                configuration.shareCode,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryActionButton(
+                    stringResource(R.string.copy_code),
+                    {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText("ATC shift configuration", configuration.shareCode),
+                        )
+                    },
+                    Modifier.weight(1f),
+                )
+                SecondaryActionButton(
+                    stringResource(R.string.share_code),
+                    {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, configuration.shareCode)
+                        }
+                        context.startActivity(
+                            Intent.createChooser(intent, shareChooserTitle),
+                        )
+                    },
+                    Modifier.weight(1f),
+                )
+            }
+            OutlinedTextField(
+                value = configuration.importCode,
+                onValueChange = { onAction(GameAction.SetShareCodeInput(it)) },
+                label = { Text(stringResource(R.string.import_share_code)) },
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 3,
+                supportingText = configuration.importError?.let { error ->
+                    { Text(error, color = colors.amber) }
+                },
+            )
+            SecondaryActionButton(
+                stringResource(R.string.import_code),
+                { onAction(GameAction.ImportShareCode) },
+                Modifier.fillMaxWidth(),
+                enabled = configuration.importCode.isNotBlank(),
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryActionButton(
+                    stringResource(R.string.use_ranked_preset),
+                    { onAction(GameAction.UseRankedSeededPreset) },
+                    Modifier.weight(1f),
+                )
+                PrimaryActionButton(
+                    if (configuration.ranked) {
+                        stringResource(R.string.start_ranked_seeded)
+                    } else {
+                        stringResource(R.string.start_practice)
+                    },
+                    { onAction(GameAction.StartCustomShift) },
+                    Modifier.weight(1f),
+                    enabled = configuration.seed.isNotBlank(),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun EndlessMilestoneScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    val milestone = state.endlessMilestone ?: return
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(.86f).widthIn(max = 720.dp),
+            color = colors.panel,
+            shape = RoundedCornerShape(22.dp),
+            border = BorderStroke(1.dp, colors.cyan),
+        ) {
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    stringResource(R.string.endless_stage_complete, milestone.completedStage).uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.green,
+                )
+                Text(
+                    localizedInteger(milestone.cumulativeScore),
+                    style = MaterialTheme.typography.displayLarge,
+                    color = colors.greenBright,
+                )
+                Text(
+                    stringResource(R.string.endless_stage_score, milestone.stageScore),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.white,
+                )
+                Text(
+                    if (milestone.personalBestDelta >= 0) {
+                        pluralStringResource(
+                            R.plurals.endless_above_best,
+                            milestone.personalBestDelta,
+                            milestone.personalBestDelta,
+                        )
+                    } else {
+                        pluralStringResource(
+                            R.plurals.endless_below_best,
+                            -milestone.personalBestDelta,
+                            -milestone.personalBestDelta,
+                        )
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.amber,
+                )
+                HorizontalDivider(color = colors.line)
+                SectionLabel(stringResource(R.string.endless_next_preview, milestone.nextStage))
+                Text(
+                    pluralStringResource(
+                        R.plurals.endless_next_traffic,
+                        milestone.nextTrafficCount,
+                        milestone.nextTrafficCount,
+                        milestone.nextObjective,
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.white,
+                )
+                Text(milestone.nextWeather, style = MaterialTheme.typography.bodySmall, color = colors.cyan)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SecondaryActionButton(
+                        stringResource(R.string.cash_out),
+                        { onAction(GameAction.CashOutEndlessRun) },
+                        Modifier.weight(1f),
+                        enabled = !milestone.choicePending,
+                    )
+                    PrimaryActionButton(
+                        stringResource(R.string.continue_next_stage),
+                        { onAction(GameAction.ContinueEndlessRun) },
+                        Modifier.weight(1f),
+                        enabled = !milestone.choicePending,
+                    )
+                }
+                if (milestone.choicePending) {
+                    Text(
+                        stringResource(R.string.endless_choice_saving),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConfigCycleRow(
+    label: String,
+    value: String,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+) {
+    val colors = MaterialTheme.atcColors
+    Surface(color = colors.panel, shape = RoundedCornerShape(10.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = colors.muted)
+                Text(value, style = MaterialTheme.typography.titleMedium, color = colors.white)
+            }
+            TextButton(onClick = onPrevious) { Text("−") }
+            TextButton(onClick = onNext) { Text("+") }
+        }
+    }
+}
+
+@Composable
+private fun localizedConfigurationValue(value: String): String = stringResource(when (value) {
+    "LIGHT" -> R.string.config_light
+    "BALANCED" -> R.string.config_balanced
+    "BUSY" -> R.string.config_busy
+    "WESTERLY" -> R.string.config_westerly
+    "EASTERLY" -> R.string.config_easterly
+    "CALM" -> R.string.config_calm
+    "WINDY" -> R.string.config_windy
+    "LOW_VISIBILITY" -> R.string.config_low_visibility
+    "RELAXED" -> R.string.config_relaxed
+    "STANDARD" -> R.string.config_standard
+    "TIGHT" -> R.string.config_tight
+    else -> R.string.not_available_short
+})
 
 @Composable
 private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick: () -> Unit) {
@@ -478,7 +886,7 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
                 role = Role.Button
                 contentDescription = description
             }
-            .clickable(enabled = !mission.locked, onClick = onClick),
+            .clickable(enabled = !mission.locked || mission.trainingAvailable, onClick = onClick),
         color = if (selected) colors.green else Color.Transparent,
         shape = RoundedCornerShape(12.dp),
     ) {
@@ -501,6 +909,12 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(mission.title, style = MaterialTheme.typography.titleMedium, color = foreground, maxLines = 1)
+                Text(
+                    mission.campaignName.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (selected) colors.night.copy(alpha = .72f) else colors.cyan,
+                    maxLines = 1,
+                )
                 Text(
                     mission.subtitle.uppercase(),
                     style = MaterialTheme.typography.labelSmall,
@@ -528,6 +942,7 @@ private fun MissionBriefing(
     mission: MissionUiModel,
     compact: Boolean,
     onStart: () -> Unit,
+    onTraining: (() -> Unit)?,
     modifier: Modifier = Modifier,
     scrollContent: Boolean = true,
 ) {
@@ -574,10 +989,19 @@ private fun MissionBriefing(
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(mission.title, style = MaterialTheme.typography.headlineLarge, color = colors.white)
+                Text(
+                    stringResource(R.string.campaign_airport, mission.campaignName, mission.airportName),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.green,
+                )
                 Text(mission.subtitle, style = MaterialTheme.typography.titleMedium, color = colors.cyan)
                 Text(scoreLabel, style = MaterialTheme.typography.labelMedium, color = colors.amber)
                 Spacer(Modifier.height(if (compact) 10.dp else 18.dp))
                 Text(mission.briefing, style = MaterialTheme.typography.bodyLarge, color = colors.muted)
+                if (mission.packOverview.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(mission.packOverview, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                }
                 if (mission.objectives.isNotEmpty()) {
                     Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
                     SectionLabel(stringResource(R.string.objectives))
@@ -620,6 +1044,27 @@ private fun MissionBriefing(
                     )
                 }
                 Spacer(Modifier.height(14.dp))
+                if (mission.contentDisclaimer.isNotBlank()) {
+                    Text(
+                        mission.contentDisclaimer,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.amber,
+                    )
+                    Text(
+                        mission.sourceAttribution,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+                onTraining?.let { launchTraining ->
+                    SecondaryActionButton(
+                        text = stringResource(R.string.practice_lesson),
+                        onClick = launchTraining,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 PrimaryActionButton(
                     text = if (mission.isEndless) {
                         stringResource(R.string.begin_endless_shift)
@@ -709,6 +1154,11 @@ fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
             stringResource(R.string.label_decluttering_summary),
             settings.labelDeclutteringEnabled,
         ) { onAction(GameAction.ToggleLabelDecluttering) }
+        SettingToggle(
+            stringResource(R.string.route_snapping),
+            stringResource(R.string.route_snapping_summary),
+            settings.routeSnappingEnabled,
+        ) { onAction(GameAction.ToggleRouteSnapping) }
         SettingToggle(
             stringResource(R.string.pause_on_focus_loss),
             stringResource(R.string.pause_on_focus_loss_summary),
@@ -1041,6 +1491,27 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         style = MaterialTheme.typography.labelSmall,
                         color = if (result.successful) colors.green else colors.amber,
                     )
+                    if (result.isPractice) {
+                        Text(
+                            stringResource(R.string.practice_result_not_ranked).uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.cyan,
+                        )
+                    }
+                    if (result.isDaily) {
+                        Text(
+                            stringResource(R.string.daily_local_result).uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.cyan,
+                        )
+                    }
+                    result.configurationIdentity?.let { identity ->
+                        Text(
+                            stringResource(R.string.configuration_identity, identity.takeLast(16)),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                        )
+                    }
                     Spacer(Modifier.height(6.dp))
                     Text(result.title, style = MaterialTheme.typography.headlineLarge, color = colors.white)
                     Spacer(Modifier.height(10.dp))
@@ -1079,6 +1550,27 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                     color = if (result.successful) colors.green else colors.amber,
                 )
+                if (result.isPractice) {
+                    Text(
+                        stringResource(R.string.practice_result_not_ranked).uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                    )
+                }
+                if (result.isDaily) {
+                    Text(
+                        stringResource(R.string.daily_local_result).uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                    )
+                }
+                result.configurationIdentity?.let { identity ->
+                    Text(
+                        stringResource(R.string.configuration_identity, identity.takeLast(16)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                    )
+                }
                 Spacer(Modifier.height(6.dp))
                 Text(result.title, style = MaterialTheme.typography.headlineLarge, color = colors.white)
                 Spacer(Modifier.height(if (compact) 10.dp else 20.dp))
@@ -1122,7 +1614,11 @@ private fun ResultsPerformancePanel(
         color = colors.panel.copy(alpha = .94f),
         border = BorderStroke(1.dp, colors.line),
     ) {
-        Column(Modifier.padding(if (compact) 18.dp else 26.dp)) {
+        Column(
+            Modifier
+                .padding(if (compact) 18.dp else 26.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
             SectionLabel(stringResource(R.string.performance_breakdown))
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
             if (result.scoreRows.isNotEmpty()) {
@@ -1168,16 +1664,53 @@ private fun ResultsPerformancePanel(
                 }
                 ProgressionSaveStatus.NOT_REQUIRED, ProgressionSaveStatus.SAVED -> Unit
             }
-            (state.completedReplays.firstOrNull { it.scenarioId == state.selectedMissionId }
-                ?: state.completedReplays.firstOrNull())?.let { replay ->
-                Spacer(Modifier.height(8.dp))
-                SecondaryActionButton(
-                    stringResource(R.string.review_replay),
-                    { onAction(GameAction.StartReplay(replay.id)) },
-                    Modifier.fillMaxWidth(),
-                )
+            if (result.flights.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                SectionLabel(stringResource(R.string.flight_debrief))
+                Spacer(Modifier.height(6.dp))
+                result.flights.forEach { flight ->
+                    FlightDebriefCard(flight)
+                    Spacer(Modifier.height(6.dp))
+                }
             }
-            Spacer(Modifier.weight(1f))
+            if (result.timeline.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                SectionLabel(stringResource(R.string.flight_timeline))
+                Spacer(Modifier.height(6.dp))
+                result.timeline.takeLast(20).forEach { event ->
+                    Text(
+                        "%02d:%02d  %s".format(
+                            Locale.ROOT,
+                            event.elapsedSeconds / 60,
+                            event.elapsedSeconds % 60,
+                            event.caption,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                    )
+                }
+            }
+            state.replayError?.let { error ->
+                Spacer(Modifier.height(8.dp))
+                Text(error, style = MaterialTheme.typography.bodySmall, color = colors.amber)
+            }
+            val relevantReplays = state.completedReplays
+                .filter { it.scenarioId == state.selectedMissionId }
+                .ifEmpty { state.completedReplays }
+            relevantReplays.forEach { replay ->
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SecondaryActionButton(
+                        stringResource(R.string.review_replay),
+                        { onAction(GameAction.StartReplay(replay.id)) },
+                        Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { onAction(GameAction.DeleteReplay(replay.id)) }) {
+                        Text(stringResource(R.string.delete_replay).uppercase())
+                    }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SecondaryActionButton(stringResource(R.string.restart), { onAction(GameAction.RestartMission) }, Modifier.weight(.8f))
                 if (result.successful) {
@@ -1201,6 +1734,77 @@ private fun ResultsPerformancePanel(
                 modifier = Modifier.align(Alignment.CenterHorizontally),
                 colors = ButtonDefaults.textButtonColors(contentColor = colors.muted),
             ) { Text(stringResource(R.string.return_to_operations).uppercase(), style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+}
+
+@Composable
+private fun FlightDebriefCard(flight: FlightDebriefUiModel) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        color = colors.night.copy(alpha = .55f),
+        shape = RoundedCornerShape(9.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Column(Modifier.padding(9.dp)) {
+            Text(flight.callsign, style = MaterialTheme.typography.labelMedium, color = colors.white)
+            Text(
+                stringResource(
+                    R.string.flight_debrief_summary,
+                    flight.operation,
+                    flight.outcome,
+                    flight.handlingSeconds,
+                    flight.distanceTenthsNm / 10,
+                    flight.distanceTenthsNm % 10,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
+            Text(
+                stringResource(
+                    R.string.flight_points_summary,
+                    flight.routeEfficiencyPoints,
+                    flight.timeBonusPoints,
+                    flight.associatedPenaltyPoints,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (flight.associatedPenaltyPoints == 0) colors.green else colors.amber,
+            )
+            Text(
+                pluralStringResource(
+                    R.plurals.flight_events_count,
+                    flight.eventSequences.size,
+                    flight.eventSequences.size,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
+            if (flight.holdSeconds > 0) {
+                Text(
+                    stringResource(R.string.flight_hold_time, flight.holdSeconds),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.amber,
+                )
+            }
+            if (flight.routeHeatmap.size > 1) {
+                val routeDescription = stringResource(R.string.route_heatmap)
+                Canvas(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(54.dp)
+                        .semantics { contentDescription = routeDescription },
+                ) {
+                    flight.routeHeatmap.zipWithNext().forEachIndexed { index, (first, second) ->
+                        val progress = (index + 1f) / flight.routeHeatmap.lastIndex
+                        drawLine(
+                            color = colors.cyan.copy(alpha = .3f + .7f * progress),
+                            start = Offset(first.x * size.width, first.y * size.height),
+                            end = Offset(second.x * size.width, second.y * size.height),
+                            strokeWidth = 3f,
+                        )
+                    }
+                }
+            }
         }
     }
 }

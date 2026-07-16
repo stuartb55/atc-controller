@@ -9,6 +9,7 @@ data class GameUiState(
     val selectedMissionId: String = "",
     val missions: List<MissionUiModel> = emptyList(),
     val career: CareerUiState = CareerUiState(),
+    val serviceRecord: ServiceRecordUiModel = ServiceRecordUiModel(),
     val aircraft: List<AircraftUiModel> = emptyList(),
     val selectedAircraftId: String? = null,
     val runway: RunwayUiModel = RunwayUiModel(),
@@ -39,7 +40,7 @@ data class GameUiState(
     val objectiveProgress: List<ObjectiveProgressUiModel> = emptyList(),
     val movementsRemaining: Int = 0,
     val missionTimeRemainingSeconds: Int = 0,
-    val missionOverdue: Boolean = false,
+    val missionClockState: MissionClockState = MissionClockState.ACTIVE,
     val upcomingTraffic: List<UpcomingTrafficUiModel> = emptyList(),
     val eventFeed: List<EventFeedEntryUiModel> = emptyList(),
     val flightStrips: List<FlightStripUiModel> = emptyList(),
@@ -47,8 +48,20 @@ data class GameUiState(
     val weatherImpact: WeatherImpactUiModel = WeatherImpactUiModel(),
     val training: TrainingUiModel? = null,
     val replay: ReplayUiModel? = null,
+    val replayError: String? = null,
     val completedReplays: List<CompletedReplayUiModel> = emptyList(),
     val runwayProceduresEnabled: Boolean = false,
+    val proceduralControlEnabled: Boolean = false,
+    val customShift: CustomShiftUiModel = CustomShiftUiModel(),
+    val isPracticeSession: Boolean = false,
+    val isDailySession: Boolean = false,
+    val configurationIdentity: String? = null,
+    val activeAssistLabels: List<String> = emptyList(),
+    val routeSnappingAssistEnabled: Boolean = true,
+    val approachSetupAssistEnabled: Boolean = true,
+    val conflictPredictionAssistEnabled: Boolean = true,
+    val endlessMilestone: EndlessMilestoneUiModel? = null,
+    val dynamicEvents: List<DynamicEventUiModel> = emptyList(),
 ) {
     val selectedAircraft: AircraftUiModel?
         get() = aircraft.firstOrNull { it.id == selectedAircraftId }
@@ -60,10 +73,11 @@ data class GameUiState(
         get() = conflicts.getOrNull(activeConflictIndex)
 
     val visibleRunways: List<RunwayUiModel>
-        get() = runways.ifEmpty { listOfNotNull(runway.takeIf { it.id.isNotBlank() }) }
+        get() = runways.filter(RunwayUiModel::isActive)
+            .ifEmpty { listOfNotNull(runway.takeIf { it.id.isNotBlank() && it.isActive }) }
 }
 
-enum class AppScreen { HOME, MISSIONS, GAME, RESULTS, SETTINGS, ABOUT }
+enum class AppScreen { HOME, MISSIONS, CUSTOM_SHIFT, GAME, MILESTONE, RESULTS, SETTINGS, ABOUT }
 
 data class NormalizedPoint(val x: Float, val y: Float) {
     fun clamped() = NormalizedPoint(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
@@ -88,25 +102,35 @@ data class AircraftUiModel(
     val trail: List<NormalizedPoint> = emptyList(),
     val route: List<NormalizedPoint> = emptyList(),
     val conflictLevel: ConflictLevel = ConflictLevel.NONE,
+    val holdFixName: String? = null,
+    val holdSeconds: Int = 0,
+    val handoffStatus: String? = null,
+    val exitClearanceGranted: Boolean = false,
 )
 
 enum class ConflictLevel { NONE, PREDICTED, LOSS }
 
 data class ObjectiveProgressUiModel(
     val id: String,
-    val label: String,
+    val kind: ObjectiveProgressKind,
     val current: Int,
     val target: Int,
     val passed: Boolean,
 )
 
+enum class ObjectiveProgressKind { SAFE_MOVEMENTS, ARRIVALS, DEPARTURES, SCORE, STRIKES }
+
 data class UpcomingTrafficUiModel(
     val aircraftId: String,
     val callsign: String,
-    val intent: String,
+    val intent: UpcomingTrafficIntent,
     val runwayId: String?,
     val secondsToEntry: Int,
 )
+
+enum class UpcomingTrafficIntent { ARRIVAL, DEPARTURE }
+
+enum class MissionClockState { ACTIVE, OVERDUE, FAILED }
 
 enum class EventFeedSeverity { ROUTINE, SUCCESS, WARNING, CRITICAL }
 
@@ -129,6 +153,8 @@ data class FlightStripUiModel(
     val clearance: String,
     val wakeRequiredSeconds: Int? = null,
     val wakeActualSeconds: Int? = null,
+    /** Stable domain-derived priority; never inferred from localized clearance text. */
+    val runwayStatePriority: Int = 0,
 )
 
 data class StarForecastUiModel(
@@ -142,15 +168,29 @@ data class WeatherImpactUiModel(
     val crosswindByRunway: Map<String, Int> = emptyMap(),
     val windDriftActive: Boolean = false,
     val reducedVisibilityActive: Boolean = false,
+    val changeNotice: String? = null,
+)
+
+data class DynamicEventUiModel(
+    val id: String,
+    val title: String,
+    val lifecycle: String,
+    val recoveryGoal: String,
+    val affectedLabel: String,
+    val canAcknowledge: Boolean,
+    val failed: Boolean = false,
 )
 
 data class TrainingUiModel(
     val lessonId: String,
+    val title: String,
     val stepIndex: Int,
     val stepCount: Int,
     val prompt: String,
     val actionGate: String,
     val canAdvance: Boolean,
+    val rejectionMessage: String? = null,
+    val isPractice: Boolean = false,
 )
 
 data class ReplayUiModel(
@@ -194,6 +234,7 @@ data class RunwayUiModel(
     val center: NormalizedPoint = NormalizedPoint(.54f, .57f),
     val headingDegrees: Float = 0f,
     val isOccupied: Boolean = false,
+    val isActive: Boolean = true,
     val wind: String = "—",
 )
 
@@ -212,6 +253,12 @@ data class MissionUiModel(
     val subtitle: String,
     val briefing: String,
     val trafficCount: Int,
+    val contentPackId: String = "",
+    val campaignName: String = "",
+    val airportName: String = "",
+    val packOverview: String = "",
+    val sourceAttribution: String = "",
+    val contentDisclaimer: String = "",
     /** Null for modes such as endless that do not persist mission stars. */
     val bestStars: Int? = null,
     /** Null means no score was recorded on a legacy or unplayed mission; zero is valid. */
@@ -227,6 +274,7 @@ data class MissionUiModel(
     val previewPositions: List<NormalizedPoint> = emptyList(),
     val locked: Boolean = false,
     val isEndless: Boolean = false,
+    val trainingAvailable: Boolean = false,
 )
 
 data class CareerUiState(
@@ -234,6 +282,21 @@ data class CareerUiState(
     val totalShifts: Int = 0,
     val earnedStars: Int = 0,
     val availableStars: Int = 0,
+)
+
+data class MasteryUiModel(
+    val focus: String,
+    val level: Int,
+    val contributingResults: Int,
+)
+
+data class ServiceRecordUiModel(
+    val totalSafeMovements: Int = 0,
+    val currentSafeStreak: Int = 0,
+    val bestSafeStreak: Int = 0,
+    val achievementCount: Int = 0,
+    val mastery: List<MasteryUiModel> = emptyList(),
+    val recommendation: String = "",
 )
 
 data class SettingsUiState(
@@ -245,6 +308,7 @@ data class SettingsUiState(
     val highContrast: Boolean = false,
     val labelScale: Float = 1f,
     val labelDeclutteringEnabled: Boolean = true,
+    val routeSnappingEnabled: Boolean = true,
     val pauseOnFocusLoss: Boolean = true,
 ) {
     val musicEnabled: Boolean get() = musicVolume > 0f
@@ -263,6 +327,11 @@ data class MissionResultUiModel(
     val successful: Boolean = true,
     val scoreRows: List<ScoreRowUiModel> = emptyList(),
     val pointsToNextStar: Int? = null,
+    val flights: List<FlightDebriefUiModel> = emptyList(),
+    val timeline: List<EventFeedEntryUiModel> = emptyList(),
+    val isPractice: Boolean = false,
+    val configurationIdentity: String? = null,
+    val isDaily: Boolean = false,
 )
 
 data class ScoreRowUiModel(
@@ -271,10 +340,87 @@ data class ScoreRowUiModel(
     val points: Int,
 )
 
+data class FlightDebriefUiModel(
+    val aircraftId: String,
+    val callsign: String,
+    val operation: String,
+    val outcome: String,
+    val handlingSeconds: Int,
+    val distanceTenthsNm: Int,
+    val routeEfficiencyPoints: Int,
+    val timeBonusPoints: Int,
+    val associatedPenaltyPoints: Int,
+    val eventSequences: List<Long>,
+    val routeHeatmap: List<NormalizedPoint>,
+    val holdSeconds: Int = 0,
+)
+
+data class CustomShiftUiModel(
+    val contentPackId: String = "",
+    val contentPackName: String = "",
+    val airportName: String = "",
+    val runwayEndLabel: String = "—",
+    val seed: String = "20260716",
+    val density: String = "BALANCED",
+    val arrivalPercent: Int = 60,
+    val runwayDirection: String = "WESTERLY",
+    val weatherPreset: String = "CALM",
+    val fuelPressure: String = "STANDARD",
+    val strikeLimit: Int = 3,
+    val routeSnapping: Boolean = true,
+    val approachSetup: Boolean = true,
+    val conflictPrediction: Boolean = true,
+    val previewTraffic: Int = 16,
+    val previewArrivals: Int = 10,
+    val previewDepartures: Int = 6,
+    val validationMessage: String? = null,
+    val configurationIdentity: String = "",
+    val ranked: Boolean = false,
+    val shareCode: String = "",
+    val importCode: String = "",
+    val importError: String? = null,
+    val dailyDate: String = "",
+    val dailyConfigurationIdentity: String = "",
+    val dailyCompleted: Boolean = false,
+    val dailyBestScore: Int? = null,
+    val dailyStreak: Int = 0,
+)
+
+data class EndlessMilestoneUiModel(
+    val completedStage: Int,
+    val stageScore: Int,
+    val cumulativeScore: Int,
+    val personalBestDelta: Int,
+    val nextStage: Int,
+    val nextTrafficCount: Int,
+    val nextObjective: String,
+    val nextWeather: String,
+    val choicePending: Boolean = false,
+)
+
 sealed interface GameAction {
     data class Navigate(val screen: AppScreen) : GameAction
     data class SelectMission(val id: String) : GameAction
     data object StartSelectedMission : GameAction
+    data class StartTrainingLesson(val missionId: String) : GameAction
+    data class SetCustomSeed(val seed: String) : GameAction
+    data class CycleCustomContentPack(val offset: Int) : GameAction
+    data class CycleCustomDensity(val offset: Int) : GameAction
+    data class SetCustomArrivalPercent(val percent: Int) : GameAction
+    data class CycleCustomRunwayDirection(val offset: Int) : GameAction
+    data class CycleCustomWeather(val offset: Int) : GameAction
+    data class CycleCustomFuelPressure(val offset: Int) : GameAction
+    data class SetCustomStrikeLimit(val limit: Int) : GameAction
+    data object ToggleCustomRouteSnapping : GameAction
+    data object ToggleCustomApproachSetup : GameAction
+    data object ToggleCustomConflictPrediction : GameAction
+    data object UseRankedSeededPreset : GameAction
+    data object StartCustomShift : GameAction
+    data class SetShareCodeInput(val code: String) : GameAction
+    data object ImportShareCode : GameAction
+    data object StartDailyShift : GameAction
+    data object ContinueEndlessRun : GameAction
+    data object CashOutEndlessRun : GameAction
     data object ContinueLastGame : GameAction
     data class SelectAircraft(val id: String?) : GameAction
     data class CommitRoute(
@@ -298,6 +444,17 @@ sealed interface GameAction {
     data object LineUpAndWait : GameAction
     data object CancelLandingClearance : GameAction
     data object CancelTakeoffClearance : GameAction
+    data class AssignHold(
+        val fixName: String,
+        val rightTurns: Boolean = true,
+        val legSeconds: Int = 60,
+    ) : GameAction
+    data object CancelHold : GameAction
+    data object IssueExitClearance : GameAction
+    data object AcknowledgeInboundHandoff : GameAction
+    data object InitiateOutboundHandoff : GameAction
+    data class CrossRunway(val runwayId: String) : GameAction
+    data class AcknowledgeDynamicEvent(val eventId: String) : GameAction
     data object TogglePause : GameAction
     data class SetTimeScale(val multiplier: Int) : GameAction
     data object AdvanceTutorial : GameAction
@@ -317,11 +474,13 @@ sealed interface GameAction {
     data object ToggleReducedMotion : GameAction
     data object ToggleHighContrast : GameAction
     data object ToggleLabelDecluttering : GameAction
+    data object ToggleRouteSnapping : GameAction
     data object TogglePauseOnFocusLoss : GameAction
     data class SetLabelScale(val scale: Float) : GameAction
     data class CycleConflict(val offset: Int) : GameAction
     data object ReplayTogglePlay : GameAction
     data class StartReplay(val replayId: String) : GameAction
+    data class DeleteReplay(val replayId: String) : GameAction
     data object ReplayStep : GameAction
     data class ReplaySetSpeed(val multiplier: Int) : GameAction
     data class ReplaySeek(val tick: Long) : GameAction

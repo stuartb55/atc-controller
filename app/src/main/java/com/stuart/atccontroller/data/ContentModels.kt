@@ -73,6 +73,44 @@ data class MechanicVersionDefinition(
     val wakeTurbulence: Int = 0,
     val windDrift: Int = 0,
     val reducedVisibility: Int = 0,
+    val proceduralControl: Int = 0,
+    val dynamicEvents: Int = 0,
+    val weatherChanges: Int = 0,
+)
+
+data class WeatherChangeDefinition(
+    val id: String,
+    val effectiveSeconds: Int,
+    val warningLeadSeconds: Int,
+    val weather: WeatherDefinition,
+    val activeRunwayEndIds: Set<String>,
+)
+
+enum class DynamicEventTypeDefinition {
+    LOW_FUEL_PRIORITY,
+    REJECTED_TAKEOFF,
+    RUNWAY_CLOSURE,
+    EQUIPMENT_OUTAGE,
+    PRIORITY_FLIGHT,
+}
+
+enum class DynamicRecoveryGoalDefinition {
+    LAND_PRIORITY_AIRCRAFT,
+    RESEQUENCE_DEPARTURE,
+    KEEP_RUNWAY_CLEAR,
+    CONTROL_WITHOUT_PREDICTION,
+    EXPEDITE_PRIORITY_FLIGHT,
+}
+
+data class DynamicEventDefinition(
+    val id: String,
+    val type: DynamicEventTypeDefinition,
+    val triggerSeconds: Int,
+    val warningLeadSeconds: Int,
+    val recoveryWindowSeconds: Int,
+    val recoveryGoal: DynamicRecoveryGoalDefinition,
+    val aircraftId: String? = null,
+    val runwayEndId: String? = null,
 )
 
 enum class TrafficIntent {
@@ -138,6 +176,9 @@ data class ScoringDefinition(
     val missedExitPenalty: Int = 250,
     val runwayProcedurePenalty: Int = 250,
     val wakeViolationPenalty: Int = 300,
+    val proceduralControlPenalty: Int = 200,
+    val dynamicEventSuccessBonus: Int = 250,
+    val dynamicEventFailurePenalty: Int = 300,
     val thresholds: StarThresholds,
 )
 
@@ -150,6 +191,10 @@ enum class TutorialFocus {
     RUNWAY_OCCUPANCY,
     MIXED_TRAFFIC,
     PARALLEL_RUNWAYS,
+    WAKE_TURBULENCE,
+    WEATHER_OPERATIONS,
+    PROCEDURAL_CONTROL,
+    DYNAMIC_EVENTS,
     NONE,
 }
 
@@ -170,4 +215,6 @@ data class ScenarioDefinition(
     val tutorialFocus: TutorialFocus = TutorialFocus.NONE,
     val isEndless: Boolean = false,
     val mechanicVersions: MechanicVersionDefinition = MechanicVersionDefinition(),
+    val dynamicEvents: List<DynamicEventDefinition> = emptyList(),
+    val weatherChanges: List<WeatherChangeDefinition> = emptyList(),
 )

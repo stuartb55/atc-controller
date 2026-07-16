@@ -2,6 +2,9 @@ package com.stuart.atccontroller.data
 
 import com.stuart.atccontroller.simulation.AircraftState
 import com.stuart.atccontroller.simulation.AircraftType
+import com.stuart.atccontroller.simulation.DynamicEventDefinition as SimulationDynamicEventDefinition
+import com.stuart.atccontroller.simulation.DynamicEventType
+import com.stuart.atccontroller.simulation.DynamicRecoveryGoal
 import com.stuart.atccontroller.simulation.Navigation
 import com.stuart.atccontroller.simulation.MechanicVersions
 import com.stuart.atccontroller.simulation.Route
@@ -12,10 +15,13 @@ import com.stuart.atccontroller.simulation.ScenarioScoringRules
 import com.stuart.atccontroller.simulation.ScheduledAircraft
 import com.stuart.atccontroller.simulation.Vec2
 import com.stuart.atccontroller.simulation.WeatherState
+import com.stuart.atccontroller.simulation.WeatherChangeDefinition as SimulationWeatherChangeDefinition
 
 /** Converts authored content into the immutable contract consumed by the simulation engine. */
 fun ScenarioDefinition.toSimulationScenario(
-    airport: AirportDefinition = ManchesterContent.airport,
+    airport: AirportDefinition = checkNotNull(ContentRegistry.airport(airportId)) {
+        "Unknown content airport $airportId"
+    },
 ): SimulationScenarioDefinition {
     ScenarioValidator.validate(this, airport).requireValid()
     require(airport.id == airportId) {
@@ -24,8 +30,9 @@ fun ScenarioDefinition.toSimulationScenario(
 
     val runwayDefinitions = airport.runwayEnds.associateBy(RunwayEndDefinition::id)
     val activeRunwayIds = runwayConfiguration.arrivalEndIds + runwayConfiguration.departureEndIds
+    val scheduledRunwayIds = weatherChanges.flatMap { it.activeRunwayEndIds }.toSet()
     val runways = airport.runwayEnds
-        .filter { it.id in activeRunwayIds }
+        .filter { it.id in activeRunwayIds || it.id in scheduledRunwayIds }
         .map { definition ->
             val reciprocal = checkNotNull(runwayDefinitions[definition.reciprocalEndId]) {
                 "Missing reciprocal end ${definition.reciprocalEndId} for ${definition.id}"
@@ -36,6 +43,7 @@ fun ScenarioDefinition.toSimulationScenario(
                 end = reciprocal.threshold.toVec2(),
                 headingDegrees = definition.headingDegrees.toDouble(),
                 physicalRunwayId = definition.physicalRunwayId,
+                active = definition.id in activeRunwayIds,
             )
         }
     val runwayStates = runways.associateBy(RunwayState::id)
@@ -135,6 +143,9 @@ fun ScenarioDefinition.toSimulationScenario(
             missedExitPenaltyPoints = scoring.missedExitPenalty,
             runwayProcedurePenaltyPoints = scoring.runwayProcedurePenalty,
             wakeViolationPenaltyPoints = scoring.wakeViolationPenalty,
+            proceduralControlPenaltyPoints = scoring.proceduralControlPenalty,
+            dynamicEventSuccessBonusPoints = scoring.dynamicEventSuccessBonus,
+            dynamicEventFailurePenaltyPoints = scoring.dynamicEventFailurePenalty,
         ),
         mapWidthNm = airport.mapWidthNm,
         mapHeightNm = airport.mapHeightNm,
@@ -150,7 +161,35 @@ fun ScenarioDefinition.toSimulationScenario(
             wakeTurbulence = mechanicVersions.wakeTurbulence,
             windDrift = mechanicVersions.windDrift,
             reducedVisibility = mechanicVersions.reducedVisibility,
+            proceduralControl = mechanicVersions.proceduralControl,
+            dynamicEvents = mechanicVersions.dynamicEvents,
+            weatherChanges = mechanicVersions.weatherChanges,
         ),
+        dynamicEvents = dynamicEvents.map { event ->
+            SimulationDynamicEventDefinition(
+                id = event.id,
+                type = DynamicEventType.valueOf(event.type.name),
+                triggerSeconds = event.triggerSeconds.toDouble(),
+                warningLeadSeconds = event.warningLeadSeconds.toDouble(),
+                recoveryWindowSeconds = event.recoveryWindowSeconds.toDouble(),
+                recoveryGoal = DynamicRecoveryGoal.valueOf(event.recoveryGoal.name),
+                aircraftId = event.aircraftId,
+                runwayId = event.runwayEndId,
+            )
+        },
+        weatherChanges = weatherChanges.map { change ->
+            SimulationWeatherChangeDefinition(
+                id = change.id,
+                effectiveSeconds = change.effectiveSeconds.toDouble(),
+                warningLeadSeconds = change.warningLeadSeconds.toDouble(),
+                weather = WeatherState(
+                    change.weather.windDirectionDegrees.toDouble(),
+                    change.weather.windSpeedKnots.toDouble(),
+                    change.weather.visibilityKm.toDouble(),
+                ),
+                activeRunwayIds = change.activeRunwayEndIds,
+            )
+        },
     )
 }
 

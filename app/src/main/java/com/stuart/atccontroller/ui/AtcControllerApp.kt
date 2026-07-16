@@ -45,7 +45,9 @@ fun AtcControllerApp(
             when (screen) {
                 AppScreen.HOME -> HomeScreen(state, onAction)
                 AppScreen.MISSIONS -> MissionSelectScreen(state, onAction)
+                AppScreen.CUSTOM_SHIFT -> CustomShiftScreen(state.customShift, onAction)
                 AppScreen.GAME -> GameScreen(state, onAction)
+                AppScreen.MILESTONE -> EndlessMilestoneScreen(state, onAction)
                 AppScreen.RESULTS -> ResultsScreen(state, onAction)
                 AppScreen.SETTINGS -> SettingsScreen(state.settings, onAction)
                 AppScreen.ABOUT -> AboutScreen(onAction)

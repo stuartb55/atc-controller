@@ -25,7 +25,15 @@ class AtcSimulationEngine(
     private val resolvedTraffic: List<ResolvedSpawn>
     private val spawnTimes = mutableMapOf<String, Double>()
     private val minimumDistances = mutableMapOf<String, Double>()
+    private val routeHistory = linkedMapOf<String, MutableList<Vec2>>()
+    private val flightOutcomes = mutableMapOf<String, FlightOutcome>()
+    private val completionTimes = mutableMapOf<String, Double>()
+    private val efficiencyByAircraft = mutableMapOf<String, Int>()
+    private val timeBonusByAircraft = mutableMapOf<String, Int>()
+    private val penaltyByAircraft = mutableMapOf<String, Int>()
     private val lastRunwayMovement = mutableMapOf<String, RunwayMovement>()
+    private val dynamicEventStates = linkedMapOf<String, DynamicEventState>()
+    private val weatherChangeStates = linkedMapOf<String, WeatherChangeState>()
 
     private var nextSpawnIndex = 0
     private var tick = 0L
@@ -36,6 +44,7 @@ class AtcSimulationEngine(
     private var speedMultiplier = 1.0
     private var strikes = 0
     private var score = ScoreBreakdown()
+    private var currentWeather = this.scenario.weather
     private var currentConflicts = emptyList<Conflict>()
     private var previousLossPairs = emptySet<PairKey>()
     private var previousPredictedPairs = emptySet<PairKey>()
@@ -60,6 +69,13 @@ class AtcSimulationEngine(
                 aircraft = scheduled.aircraft.deepCopy(),
             )
         }.sortedWith(compareBy<ResolvedSpawn> { it.timeSeconds }.thenBy { it.originalOrder })
+        this.scenario.dynamicEvents.sortedBy(DynamicEventDefinition::id).forEach { definition ->
+            dynamicEventStates[definition.id] = DynamicEventState(definition)
+        }
+        this.scenario.weatherChanges.sortedBy(WeatherChangeDefinition::effectiveSeconds)
+            .forEach { definition ->
+                weatherChangeStates[definition.id] = WeatherChangeState(definition)
+            }
     }
 
     val snapshot: GameSnapshot
@@ -82,21 +98,27 @@ class AtcSimulationEngine(
             is PlayerCommand.SetSimulationSpeed -> setSpeed(command.multiplier, events)
             is PlayerCommand.SetRoute -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
-                if (command.route.waypoints.size > MAX_ROUTE_WAYPOINTS) {
-                    reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Route has too many waypoints", events)
+                if (command.route.waypoints.size > MAX_ROUTE_WAYPOINTS ||
+                    command.route.waypoints.any { !it.isValidRouteWaypoint() }
+                ) {
+                    reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Route waypoints must be finite normalized coordinates within the waypoint limit", events)
                     return@updateAircraft state
                 }
                 state.copy(route = Route(command.route.waypoints.toList()), routeIndex = 0)
             }
             is PlayerCommand.DirectTo -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
+                if (!command.waypoint.isValidRouteWaypoint()) {
+                    reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Waypoint must be a finite normalized coordinate", events)
+                    return@updateAircraft state
+                }
                 state.copy(route = Route(listOf(command.waypoint)), routeIndex = 0)
             }
             is PlayerCommand.AppendWaypoint -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
                 val remaining = state.route.waypoints.drop(state.routeIndex)
-                if (remaining.size >= MAX_ROUTE_WAYPOINTS) {
-                    reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Route has too many waypoints", events)
+                if (remaining.size >= MAX_ROUTE_WAYPOINTS || !command.waypoint.isValidRouteWaypoint()) {
+                    reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Waypoint must be finite, normalized, and within the waypoint limit", events)
                     state
                 } else {
                     state.copy(route = Route(remaining + command.waypoint), routeIndex = 0)
@@ -136,6 +158,16 @@ class AtcSimulationEngine(
             is PlayerCommand.CancelLandingClearance -> cancelLanding(command.aircraftId, events)
             is PlayerCommand.CancelTakeoffClearance -> cancelTakeoff(command.aircraftId, events)
             is PlayerCommand.GoAround -> playerGoAround(command, events)
+            is PlayerCommand.AssignHold -> assignHold(command, events)
+            is PlayerCommand.CancelHold -> cancelHold(command.aircraftId, events)
+            is PlayerCommand.IssueExitClearance -> issueExitClearance(command.aircraftId, events)
+            is PlayerCommand.AcknowledgeInboundHandoff -> acknowledgeInboundHandoff(
+                command.aircraftId,
+                events,
+            )
+            is PlayerCommand.InitiateOutboundHandoff -> initiateOutboundHandoff(command, events)
+            is PlayerCommand.AcknowledgeDynamicEvent -> acknowledgeDynamicEvent(command.eventId, events)
+            is PlayerCommand.CrossRunway -> crossRunway(command, events)
         }
         lastEvents = events.toList()
         rememberEvents(lastEvents)
@@ -338,6 +370,15 @@ class AtcSimulationEngine(
             reject(state.id, CommandRejectionReason.ARRIVAL_REQUIRED, "Only an arrival can be assigned an approach", events)
             return
         }
+        if (state.hold != null) {
+            reject(
+                state.id,
+                CommandRejectionReason.HOLD_ALREADY_ACTIVE,
+                "Cancel the hold before assigning an approach",
+                events,
+            )
+            return
+        }
         val runway = validateRunwayFor(state, command.runwayId, events) ?: return
         val clearance = Clearance.Approach(runway.id)
         aircraft[state.id] = state.copy(
@@ -363,7 +404,11 @@ class AtcSimulationEngine(
             status = if (state.status == AircraftStatus.APPROACH) AircraftStatus.INBOUND else state.status,
         )
         events += GameEvent.ApproachAssigned(state.id, null, elapsedSeconds)
-        events += GameEvent.ClearanceCancelled(state.id, "APPROACH", elapsedSeconds)
+        events += GameEvent.ClearanceCancelled(
+            state.id,
+            CancelledClearanceType.APPROACH,
+            elapsedSeconds,
+        )
     }
 
     private fun lineUpAndWait(command: PlayerCommand.LineUpAndWait, events: MutableList<GameEvent>) {
@@ -405,7 +450,11 @@ class AtcSimulationEngine(
         aircraft[state.id] = state.copy(
             clearance = state.approachRunwayId?.let(Clearance::Approach) ?: Clearance.None,
         )
-        events += GameEvent.ClearanceCancelled(state.id, "LANDING", elapsedSeconds)
+        events += GameEvent.ClearanceCancelled(
+            state.id,
+            CancelledClearanceType.LANDING,
+            elapsedSeconds,
+        )
     }
 
     private fun cancelTakeoff(aircraftId: String, events: MutableList<GameEvent>) {
@@ -427,7 +476,11 @@ class AtcSimulationEngine(
             clearance = runway?.let { Clearance.LineUpAndWait(it.id) } ?: Clearance.None,
             statusElapsedSeconds = 0.0,
         )
-        events += GameEvent.ClearanceCancelled(state.id, "TAKE_OFF", elapsedSeconds)
+        events += GameEvent.ClearanceCancelled(
+            state.id,
+            CancelledClearanceType.TAKEOFF,
+            elapsedSeconds,
+        )
     }
 
     private fun validateRunwayFor(
@@ -445,7 +498,7 @@ class AtcSimulationEngine(
             hasReciprocalConflict(runway, state.id) ->
                 reject(state.id, CommandRejectionReason.RUNWAY_RECIPROCAL_CONFLICT, "Reciprocal runway end is in use", events)
             scenario.mechanicVersions.windDrift > 0 &&
-                !WeatherOperations.isRunwaySuitable(scenario.weather, runway, state.type) ->
+                !WeatherOperations.isRunwaySuitable(currentWeather, runway, state.type) ->
                 reject(state.id, CommandRejectionReason.RUNWAY_WIND_UNSUITABLE, "Crosswind exceeds this aircraft class limit on runway $runwayId", events)
             else -> return runway
         }
@@ -466,6 +519,72 @@ class AtcSimulationEngine(
         return false
     }
 
+    private fun crossRunway(
+        command: PlayerCommand.CrossRunway,
+        events: MutableList<GameEvent>,
+    ) {
+        if (!requireRunwayProcedures(command.aircraftId, events)) return
+        if (!canAcceptFlightCommand(command.aircraftId, events)) return
+        val state = aircraft.getValue(command.aircraftId)
+        val runway = runways[command.runwayId]
+        when {
+            runway == null -> reject(
+                state.id,
+                CommandRejectionReason.UNKNOWN_RUNWAY,
+                "Unknown runway ${command.runwayId}",
+                events,
+            )
+            !runway.active -> reject(
+                state.id,
+                CommandRejectionReason.RUNWAY_INACTIVE,
+                "Runway ${runway.id} is not active",
+                events,
+            )
+            state.operation != FlightOperation.DEPARTURE ||
+                state.status != AircraftStatus.HOLDING_SHORT -> reject(
+                state.id,
+                CommandRejectionReason.CROSSING_NOT_ELIGIBLE,
+                "Only an aircraft holding short can cross a runway",
+                events,
+            )
+            state.runwayId?.let(runways::get)?.physicalRunwayId == runway.physicalRunwayId -> reject(
+                state.id,
+                CommandRejectionReason.CROSSING_NOT_ELIGIBLE,
+                "The assigned departure runway is not a crossing",
+                events,
+            )
+            physicalOccupant(runway) != null -> reject(
+                state.id,
+                CommandRejectionReason.RUNWAY_OCCUPIED,
+                "Physical runway ${runway.physicalRunwayId} is occupied",
+                events,
+            )
+            else -> {
+                occupyPhysicalRunway(runway, state.id, events)
+                val crossing = RunwayCrossingState(
+                    runwayId = runway.id,
+                    origin = runway.threshold,
+                    destination = runway.end,
+                )
+                aircraft[state.id] = state.copy(
+                    status = AircraftStatus.CROSSING_RUNWAY,
+                    position = crossing.origin,
+                    headingDegrees = runway.headingDegrees,
+                    speedKnots = 15.0,
+                    clearance = Clearance.CrossRunway(runway.id),
+                    runwayCrossing = crossing,
+                    statusElapsedSeconds = 0.0,
+                )
+                events += GameEvent.ClearanceIssued(
+                    state.id,
+                    Clearance.CrossRunway(runway.id),
+                    elapsedSeconds,
+                )
+                events += GameEvent.RunwayCrossingStarted(state.id, runway.id, elapsedSeconds)
+            }
+        }
+    }
+
     private fun playerGoAround(command: PlayerCommand.GoAround, events: MutableList<GameEvent>) {
         if (!canAcceptFlightCommand(command.aircraftId, events)) return
         val state = aircraft.getValue(command.aircraftId)
@@ -482,10 +601,527 @@ class AtcSimulationEngine(
         performGoAround(state, command.targetAltitudeFeet, automatic = false, events = events)
     }
 
+    private fun assignHold(command: PlayerCommand.AssignHold, events: MutableList<GameEvent>) {
+        if (!requireProceduralControl(command.aircraftId, events)) return
+        if (!canAcceptFlightCommand(command.aircraftId, events)) return
+        val state = aircraft.getValue(command.aircraftId)
+        when {
+            state.operation != FlightOperation.ARRIVAL ||
+                state.status !in setOf(
+                    AircraftStatus.INBOUND,
+                    AircraftStatus.APPROACH,
+                    AircraftStatus.GO_AROUND,
+                    AircraftStatus.HOLDING,
+                ) -> reject(
+                state.id,
+                CommandRejectionReason.ARRIVAL_REQUIRED,
+                "Only an airborne arrival can enter a hold",
+                events,
+            )
+            state.hold != null -> reject(
+                state.id,
+                CommandRejectionReason.HOLD_ALREADY_ACTIVE,
+                "Cancel the active hold before assigning another",
+                events,
+            )
+            !command.inboundCourseDegrees.isFinite() ||
+                !command.altitudeFeet.isFinite() || command.altitudeFeet !in 1_000.0..20_000.0 ||
+                !command.legSeconds.isFinite() || command.legSeconds !in 20.0..180.0 -> reject(
+                state.id,
+                CommandRejectionReason.INVALID_HOLD,
+                "Hold course, altitude, and leg time are outside the simplified limits",
+                events,
+            )
+            else -> {
+                val hold = HoldState(
+                    fix = command.fix,
+                    inboundCourseDegrees = Navigation.normalizeHeading(command.inboundCourseDegrees),
+                    altitudeFeet = command.altitudeFeet,
+                    turnDirection = command.turnDirection,
+                    legSeconds = command.legSeconds,
+                )
+                val clearance = Clearance.Hold(
+                    hold.fix,
+                    hold.inboundCourseDegrees,
+                    hold.altitudeFeet,
+                    hold.turnDirection,
+                    hold.legSeconds,
+                )
+                aircraft[state.id] = state.copy(
+                    status = if (state.status == AircraftStatus.APPROACH) {
+                        AircraftStatus.INBOUND
+                    } else {
+                        state.status
+                    },
+                    targetAltitudeFeet = hold.altitudeFeet,
+                    hold = hold,
+                    clearance = clearance,
+                    approachRunwayId = null,
+                    route = Route.EMPTY,
+                    routeIndex = 0,
+                )
+                events += GameEvent.HoldAssigned(
+                    state.id,
+                    hold.fix,
+                    hold.inboundCourseDegrees,
+                    hold.altitudeFeet,
+                    hold.turnDirection,
+                    hold.legSeconds,
+                    elapsedSeconds,
+                )
+                events += GameEvent.ClearanceIssued(state.id, clearance, elapsedSeconds)
+            }
+        }
+    }
+
+    private fun cancelHold(aircraftId: String, events: MutableList<GameEvent>) {
+        if (!requireProceduralControl(aircraftId, events)) return
+        if (!canAcceptFlightCommand(aircraftId, events)) return
+        val state = aircraft.getValue(aircraftId)
+        if (state.hold == null) {
+            reject(
+                aircraftId,
+                CommandRejectionReason.HOLD_NOT_ACTIVE,
+                "Aircraft has no assigned hold",
+                events,
+            )
+            return
+        }
+        aircraft[aircraftId] = state.copy(
+            status = AircraftStatus.INBOUND,
+            hold = null,
+            clearance = Clearance.None,
+            statusElapsedSeconds = 0.0,
+        )
+        events += GameEvent.HoldCancelled(
+            aircraftId,
+            state.holdAccumulatedSeconds,
+            elapsedSeconds,
+        )
+    }
+
+    private fun issueExitClearance(aircraftId: String, events: MutableList<GameEvent>) {
+        if (!requireProceduralControl(aircraftId, events)) return
+        if (!canAcceptFlightCommand(aircraftId, events)) return
+        val state = aircraft.getValue(aircraftId)
+        val exit = state.exitPoint
+        if (state.operation != FlightOperation.DEPARTURE || exit == null ||
+            state.status != AircraftStatus.DEPARTING
+        ) {
+            reject(
+                aircraftId,
+                CommandRejectionReason.EXIT_NOT_AVAILABLE,
+                "Exit clearance is available only to an airborne departure",
+                events,
+            )
+            return
+        }
+        aircraft[aircraftId] = state.copy(
+            exitClearanceGranted = true,
+            clearance = Clearance.Exit(exit),
+        )
+        events += GameEvent.ExitClearanceIssued(aircraftId, exit, elapsedSeconds)
+        events += GameEvent.ClearanceIssued(aircraftId, Clearance.Exit(exit), elapsedSeconds)
+    }
+
+    private fun acknowledgeInboundHandoff(
+        aircraftId: String,
+        events: MutableList<GameEvent>,
+    ) {
+        if (!requireProceduralControl(aircraftId, events)) return
+        if (!canAcceptFlightCommand(aircraftId, events)) return
+        val state = aircraft.getValue(aircraftId)
+        val handoff = state.handoff
+        if (state.operation != FlightOperation.ARRIVAL || handoff == null ||
+            handoff.direction != HandoffDirection.INBOUND || handoff.status != HandoffStatus.OFFERED
+        ) {
+            reject(
+                aircraftId,
+                CommandRejectionReason.HANDOFF_NOT_ELIGIBLE,
+                "No inbound handoff is waiting for acknowledgement",
+                events,
+            )
+            return
+        }
+        val acknowledged = handoff.copy(
+            status = HandoffStatus.ACKNOWLEDGED,
+            requestedAtSeconds = elapsedSeconds,
+        )
+        aircraft[aircraftId] = state.copy(handoff = acknowledged)
+        events += GameEvent.HandoffChanged(
+            aircraftId,
+            acknowledged.sectorId,
+            acknowledged.direction,
+            acknowledged.status,
+            elapsedSeconds,
+        )
+    }
+
+    private fun initiateOutboundHandoff(
+        command: PlayerCommand.InitiateOutboundHandoff,
+        events: MutableList<GameEvent>,
+    ) {
+        if (!requireProceduralControl(command.aircraftId, events)) return
+        if (!canAcceptFlightCommand(command.aircraftId, events)) return
+        val state = aircraft.getValue(command.aircraftId)
+        when {
+            state.operation != FlightOperation.DEPARTURE || state.status != AircraftStatus.DEPARTING ->
+                reject(
+                    state.id,
+                    CommandRejectionReason.HANDOFF_NOT_ELIGIBLE,
+                    "Outbound handoff is available only to an airborne departure",
+                    events,
+                )
+            !state.exitClearanceGranted -> reject(
+                state.id,
+                CommandRejectionReason.EXIT_CLEARANCE_REQUIRED,
+                "Issue the terminal exit clearance before handoff",
+                events,
+            )
+            state.handoff?.status in setOf(
+                HandoffStatus.REQUESTED,
+                HandoffStatus.ACKNOWLEDGED,
+                HandoffStatus.COMPLETED,
+            ) -> reject(
+                state.id,
+                CommandRejectionReason.HANDOFF_ALREADY_ACTIVE,
+                "An outbound handoff is already active",
+                events,
+            )
+            else -> {
+                val handoff = HandoffState(
+                    sectorId = command.sectorId,
+                    direction = HandoffDirection.OUTBOUND,
+                    status = HandoffStatus.REQUESTED,
+                    requestedAtSeconds = elapsedSeconds,
+                )
+                aircraft[state.id] = state.copy(handoff = handoff)
+                events += GameEvent.HandoffChanged(
+                    state.id,
+                    handoff.sectorId,
+                    handoff.direction,
+                    handoff.status,
+                    elapsedSeconds,
+                )
+            }
+        }
+    }
+
+    private fun requireProceduralControl(
+        aircraftId: String,
+        events: MutableList<GameEvent>,
+    ): Boolean {
+        if (scenario.mechanicVersions.proceduralControl > 0) return true
+        reject(
+            aircraftId,
+            CommandRejectionReason.MECHANIC_NOT_ENABLED,
+            "Procedural control is not enabled for this scenario",
+            events,
+        )
+        return false
+    }
+
+    private fun acknowledgeDynamicEvent(eventId: String, events: MutableList<GameEvent>) {
+        if (scenario.mechanicVersions.dynamicEvents == 0) {
+            reject(
+                null,
+                CommandRejectionReason.MECHANIC_NOT_ENABLED,
+                "Dynamic events are not enabled for this scenario",
+                events,
+            )
+            return
+        }
+        val current = dynamicEventStates[eventId]
+        when {
+            current == null -> reject(
+                null,
+                CommandRejectionReason.UNKNOWN_DYNAMIC_EVENT,
+                "Unknown dynamic event $eventId",
+                events,
+            )
+            current.lifecycle != DynamicEventLifecycle.ACTIVE -> reject(
+                current.definition.aircraftId,
+                CommandRejectionReason.DYNAMIC_EVENT_NOT_ACTIVE,
+                "The event is not awaiting a recovery response",
+                events,
+            )
+            else -> changeDynamicEvent(
+                current.copy(
+                    lifecycle = DynamicEventLifecycle.RECOVERY,
+                    acknowledged = true,
+                ),
+                events,
+            )
+        }
+    }
+
+    private fun evaluateWeatherChanges(events: MutableList<GameEvent>) {
+        if (scenario.mechanicVersions.weatherChanges == 0) return
+        weatherChangeStates.values.toList().forEach { state ->
+            val definition = state.definition
+            when (state.lifecycle) {
+                WeatherChangeLifecycle.SCHEDULED -> if (
+                    elapsedSeconds + EPSILON >=
+                    definition.effectiveSeconds - definition.warningLeadSeconds
+                ) {
+                    val warning = state.copy(lifecycle = WeatherChangeLifecycle.WARNING)
+                    weatherChangeStates[definition.id] = warning
+                    events += GameEvent.WeatherChangeWarning(
+                        definition.id,
+                        definition.effectiveSeconds,
+                        definition.weather,
+                        definition.activeRunwayIds,
+                        elapsedSeconds,
+                    )
+                }
+                WeatherChangeLifecycle.WARNING -> if (
+                    elapsedSeconds + EPSILON >= definition.effectiveSeconds
+                ) {
+                    applyWeatherChange(state, events)
+                }
+                WeatherChangeLifecycle.APPLIED -> Unit
+            }
+        }
+    }
+
+    private fun applyWeatherChange(
+        state: WeatherChangeState,
+        events: MutableList<GameEvent>,
+    ) {
+        val definition = state.definition
+        val deactivating = runways.values.filter {
+            it.active && it.id !in definition.activeRunwayIds
+        }
+        if (deactivating.any { it.occupiedByAircraftId != null }) return
+        val deactivatingPhysicalIds = deactivating.map(RunwayState::physicalRunwayId).toSet()
+        aircraft.values.toList().filter { aircraftState ->
+            aircraftState.operation == FlightOperation.ARRIVAL &&
+                aircraftState.clearance is Clearance.Land &&
+                aircraftState.runwayId?.let(runways::get)?.physicalRunwayId in deactivatingPhysicalIds
+        }.forEach { aircraftState ->
+            aircraft[aircraftState.id] = performGoAround(
+                aircraftState,
+                3_000.0,
+                automatic = true,
+                events = events,
+            )
+        }
+        runways.replaceAll { _, runway ->
+            val scheduledActive = runway.id in definition.activeRunwayIds
+            val closedByEvent = dynamicEventStates.values.any { dynamic ->
+                dynamic.definition.type == DynamicEventType.RUNWAY_CLOSURE &&
+                    dynamic.lifecycle in setOf(
+                        DynamicEventLifecycle.ACTIVE,
+                        DynamicEventLifecycle.RECOVERY,
+                    ) && dynamic.definition.runwayId?.let(runways::get)?.physicalRunwayId ==
+                    runway.physicalRunwayId
+            }
+            runway.copy(active = scheduledActive && !closedByEvent)
+        }
+        currentWeather = definition.weather
+        weatherChangeStates[definition.id] = state.copy(lifecycle = WeatherChangeLifecycle.APPLIED)
+        events += GameEvent.WeatherChanged(
+            definition.id,
+            definition.weather,
+            definition.activeRunwayIds,
+            elapsedSeconds,
+        )
+    }
+
+    private fun evaluateDynamicEvents(events: MutableList<GameEvent>) {
+        if (scenario.mechanicVersions.dynamicEvents == 0) return
+        dynamicEventStates.values.toList().forEach { current ->
+            val definition = current.definition
+            val warningAt = definition.triggerSeconds - definition.warningLeadSeconds
+            when (current.lifecycle) {
+                DynamicEventLifecycle.SCHEDULED -> if (elapsedSeconds + EPSILON >= warningAt) {
+                    changeDynamicEvent(current.copy(lifecycle = DynamicEventLifecycle.WARNING), events)
+                }
+                DynamicEventLifecycle.WARNING -> if (
+                    elapsedSeconds + EPSILON >= definition.triggerSeconds
+                ) {
+                    activateDynamicEvent(current, events)
+                }
+                DynamicEventLifecycle.ACTIVE,
+                DynamicEventLifecycle.RECOVERY -> evaluateDynamicRecovery(current, events)
+                DynamicEventLifecycle.RESOLVED,
+                DynamicEventLifecycle.FAILED -> Unit
+            }
+        }
+    }
+
+    private fun activateDynamicEvent(
+        current: DynamicEventState,
+        events: MutableList<GameEvent>,
+    ) {
+        val definition = current.definition
+        when (definition.type) {
+            DynamicEventType.LOW_FUEL_PRIORITY -> definition.aircraftId?.let { id ->
+                aircraft[id]?.let { state ->
+                    val priorityFuel = min(state.fuelRemainingSeconds, LOW_FUEL_PRIORITY_SECONDS)
+                    aircraft[id] = state.copy(fuelRemainingSeconds = priorityFuel.coerceAtLeast(EPSILON))
+                }
+            }
+            DynamicEventType.REJECTED_TAKEOFF -> definition.aircraftId?.let { id ->
+                aircraft[id]?.let { state ->
+                    if (
+                        state.status == AircraftStatus.TAKEOFF_ROLL &&
+                        state.speedKnots <= state.type.takeoffSpeedKnots * .5
+                    ) {
+                        aircraft[id] = state.copy(
+                            status = AircraftStatus.LINED_UP,
+                            speedKnots = 0.0,
+                            clearance = state.runwayId?.let(Clearance::LineUpAndWait)
+                                ?: Clearance.None,
+                            statusElapsedSeconds = 0.0,
+                        )
+                        events += GameEvent.ClearanceCancelled(
+                            id,
+                            CancelledClearanceType.TAKEOFF,
+                            elapsedSeconds,
+                        )
+                    }
+                }
+            }
+            DynamicEventType.RUNWAY_CLOSURE -> definition.runwayId?.let { runwayId ->
+                val physicalId = runways[runwayId]?.physicalRunwayId
+                if (physicalId != null) {
+                    runways.replaceAll { _, runway ->
+                        if (runway.physicalRunwayId == physicalId) runway.copy(active = false) else runway
+                    }
+                    aircraft.values.toList().filter { state ->
+                        state.operation == FlightOperation.ARRIVAL &&
+                            state.runwayId?.let(runways::get)?.physicalRunwayId == physicalId &&
+                            state.clearance is Clearance.Land
+                    }.forEach { state ->
+                        aircraft[state.id] = performGoAround(
+                            state,
+                            3_000.0,
+                            automatic = true,
+                            events = events,
+                        )
+                    }
+                }
+            }
+            DynamicEventType.EQUIPMENT_OUTAGE,
+            DynamicEventType.PRIORITY_FLIGHT -> Unit
+        }
+        changeDynamicEvent(current.copy(lifecycle = DynamicEventLifecycle.ACTIVE), events)
+    }
+
+    private fun evaluateDynamicRecovery(
+        current: DynamicEventState,
+        events: MutableList<GameEvent>,
+    ) {
+        val definition = current.definition
+        val deadline = definition.triggerSeconds + definition.recoveryWindowSeconds
+        val autoRecoveryElapsed = elapsedSeconds + EPSILON >= definition.triggerSeconds +
+            min(30.0, definition.recoveryWindowSeconds / 2.0)
+        val aircraftState = definition.aircraftId?.let(aircraft::get)
+        val recovered = current.acknowledged && when (definition.type) {
+            DynamicEventType.LOW_FUEL_PRIORITY,
+            DynamicEventType.PRIORITY_FLIGHT -> aircraftState?.status in setOf(
+                AircraftStatus.LANDING,
+                AircraftStatus.LANDED,
+                AircraftStatus.DEPARTING,
+                AircraftStatus.EXITED,
+            )
+            DynamicEventType.REJECTED_TAKEOFF -> aircraftState?.status in setOf(
+                AircraftStatus.DEPARTING,
+                AircraftStatus.EXITED,
+            )
+            DynamicEventType.RUNWAY_CLOSURE,
+            DynamicEventType.EQUIPMENT_OUTAGE -> autoRecoveryElapsed
+        }
+        when {
+            recovered -> resolveDynamicEvent(current, succeeded = true, events)
+            elapsedSeconds + EPSILON >= deadline -> resolveDynamicEvent(
+                current,
+                succeeded = false,
+                events,
+            )
+        }
+    }
+
+    private fun resolveDynamicEvent(
+        current: DynamicEventState,
+        succeeded: Boolean,
+        events: MutableList<GameEvent>,
+    ) {
+        if (current.definition.type == DynamicEventType.RUNWAY_CLOSURE) {
+            current.definition.runwayId?.let { runwayId ->
+                val physicalId = runways[runwayId]?.physicalRunwayId
+                if (physicalId != null) {
+                    runways.replaceAll { _, runway ->
+                        if (runway.physicalRunwayId == physicalId) {
+                            runway.copy(active = isScheduledRunwayActive(runway.id))
+                        } else {
+                            runway
+                        }
+                    }
+                }
+            }
+        }
+        if (succeeded) {
+            score = score.copy(
+                dynamicEventBonusPoints = saturatingAdd(
+                    score.dynamicEventBonusPoints,
+                    scenario.scoring.dynamicEventSuccessBonusPoints,
+                ),
+            )
+        } else {
+            val penalty = scenario.scoring.dynamicEventFailurePenaltyPoints
+            score = score.copy(
+                penalties = saturatingAdd(score.penalties, penalty),
+                dynamicEventPenaltyPoints = saturatingAdd(score.dynamicEventPenaltyPoints, penalty),
+            )
+            current.definition.aircraftId?.let { addAircraftPenalty(it, penalty) }
+        }
+        changeDynamicEvent(
+            current.copy(
+                lifecycle = if (succeeded) {
+                    DynamicEventLifecycle.RESOLVED
+                } else {
+                    DynamicEventLifecycle.FAILED
+                },
+            ),
+            events,
+        )
+    }
+
+    private fun changeDynamicEvent(
+        updated: DynamicEventState,
+        events: MutableList<GameEvent>,
+    ) {
+        dynamicEventStates[updated.definition.id] = updated
+        with(updated.definition) {
+            events += GameEvent.DynamicEventChanged(
+                eventId = id,
+                type = type,
+                lifecycle = updated.lifecycle,
+                recoveryGoal = recoveryGoal,
+                aircraftId = aircraftId,
+                runwayId = runwayId,
+                elapsedSeconds = elapsedSeconds,
+            )
+        }
+    }
+
+    private fun isScheduledRunwayActive(runwayId: String): Boolean {
+        val latest = weatherChangeStates.values
+            .filter { it.lifecycle == WeatherChangeLifecycle.APPLIED }
+            .maxByOrNull { it.definition.effectiveSeconds }
+        return latest?.definition?.activeRunwayIds?.contains(runwayId)
+            ?: scenario.runways.firstOrNull { it.id == runwayId }?.active
+            ?: false
+    }
+
     private fun stepOnce(events: MutableList<GameEvent>) {
         tick += 1
         elapsedSeconds = tick * parameters.fixedStepSeconds
         spawnDueAircraft(events)
+        if (status == GameStatus.RUNNING) evaluateWeatherChanges(events)
+        if (status == GameStatus.RUNNING) evaluateDynamicEvents(events)
 
         for (id in aircraft.keys.toList()) {
             if (status != GameStatus.RUNNING) break
@@ -495,6 +1131,12 @@ class AtcSimulationEngine(
         if (status == GameStatus.RUNNING) evaluateWakeSpacing(events)
         if (status == GameStatus.RUNNING) evaluateConflicts(events)
         if (status == GameStatus.RUNNING) evaluateObjectivesAndTime(events)
+        if (tick % ROUTE_HISTORY_SAMPLE_TICKS == 0L ||
+            events.any { it is GameEvent.Landed || it is GameEvent.AircraftExited ||
+                it is GameEvent.AircraftLeftAirspace || it is GameEvent.Collision }
+        ) {
+            recordRouteHistory()
+        }
     }
 
     private fun spawnDueAircraft(events: MutableList<GameEvent>) {
@@ -502,11 +1144,36 @@ class AtcSimulationEngine(
             resolvedTraffic[nextSpawnIndex].timeSeconds <= elapsedSeconds + EPSILON
         ) {
             val resolved = resolvedTraffic[nextSpawnIndex++]
-            val state = resolved.aircraft.deepCopy()
+            val original = resolved.aircraft.deepCopy()
+            val state = if (
+                scenario.mechanicVersions.proceduralControl > 0 &&
+                original.operation == FlightOperation.ARRIVAL
+            ) {
+                original.copy(
+                    handoff = HandoffState(
+                        sectorId = "TERMINAL_ENTRY",
+                        direction = HandoffDirection.INBOUND,
+                        status = HandoffStatus.OFFERED,
+                        requestedAtSeconds = elapsedSeconds,
+                    ),
+                )
+            } else {
+                original
+            }
             aircraft[state.id] = state
             spawnTimes[state.id] = elapsedSeconds
             minimumDistances[state.id] = minimumUsefulDistance(state)
+            routeHistory[state.id] = mutableListOf(state.position)
             events += GameEvent.AircraftSpawned(state.id, elapsedSeconds)
+            state.handoff?.let { handoff ->
+                events += GameEvent.HandoffChanged(
+                    state.id,
+                    handoff.sectorId,
+                    handoff.direction,
+                    handoff.status,
+                    elapsedSeconds,
+                )
+            }
         }
     }
 
@@ -519,8 +1186,10 @@ class AtcSimulationEngine(
             .coerceAtLeast(0.0)
         val fueled = original.copy(fuelRemainingSeconds = remainingFuel)
         if (remainingFuel <= EPSILON) {
-            fueled.runwayId?.let { clearRunwayIfOccupiedBy(it, fueled.id) }
+            fueled.runwayId?.let { clearRunwayIfOccupiedBy(it, fueled.id, events) }
             fail(FailureReason.FUEL_EXHAUSTED, events)
+            flightOutcomes[fueled.id] = FlightOutcome.CRASHED
+            completionTimes.putIfAbsent(fueled.id, elapsedSeconds)
             return fueled.copy(
                 status = AircraftStatus.CRASHED,
                 speedKnots = 0.0,
@@ -531,11 +1200,13 @@ class AtcSimulationEngine(
         return when (fueled.status) {
             AircraftStatus.TAKEOFF_ROLL -> simulateTakeoffRoll(fueled, events)
             AircraftStatus.LANDING -> simulateLandingRoll(fueled, events)
+            AircraftStatus.CROSSING_RUNWAY -> simulateRunwayCrossing(fueled, events)
             AircraftStatus.HOLDING_SHORT,
             AircraftStatus.LINED_UP -> fueled
             AircraftStatus.INBOUND,
             AircraftStatus.APPROACH,
             AircraftStatus.GO_AROUND,
+            AircraftStatus.HOLDING,
             AircraftStatus.DEPARTING -> simulateAirborne(fueled, events)
             else -> fueled
         }
@@ -571,7 +1242,7 @@ class AtcSimulationEngine(
             )
         }
 
-        clearRunwayIfOccupiedBy(runway.id, state.id)
+        clearRunwayIfOccupiedBy(runway.id, state.id, events)
         events += GameEvent.Takeoff(state.id, runway.id, elapsedSeconds)
         lastRunwayMovement[runway.physicalRunwayId] = RunwayMovement(
             state.id,
@@ -593,6 +1264,40 @@ class AtcSimulationEngine(
         )
     }
 
+    private fun simulateRunwayCrossing(
+        state: AircraftState,
+        events: MutableList<GameEvent>,
+    ): AircraftState {
+        val crossing = state.runwayCrossing ?: return state
+        val elapsed = crossing.elapsedSeconds + parameters.fixedStepSeconds
+        val progress = (elapsed / RUNWAY_CROSSING_SECONDS).coerceIn(0.0, 1.0)
+        val position = Vec2(
+            crossing.origin.x + (crossing.destination.x - crossing.origin.x) * progress,
+            crossing.origin.y + (crossing.destination.y - crossing.origin.y) * progress,
+        )
+        if (progress + EPSILON < 1.0) {
+            return state.copy(
+                position = position,
+                runwayCrossing = crossing.copy(elapsedSeconds = elapsed),
+                statusElapsedSeconds = elapsed,
+            )
+        }
+        clearRunwayIfOccupiedBy(crossing.runwayId, state.id, events)
+        events += GameEvent.RunwayCrossingCompleted(
+            state.id,
+            crossing.runwayId,
+            elapsedSeconds,
+        )
+        return state.copy(
+            status = AircraftStatus.HOLDING_SHORT,
+            position = position,
+            speedKnots = 0.0,
+            clearance = Clearance.None,
+            runwayCrossing = null,
+            statusElapsedSeconds = 0.0,
+        )
+    }
+
     private fun simulateLandingRoll(
         state: AircraftState,
         events: MutableList<GameEvent>,
@@ -610,7 +1315,7 @@ class AtcSimulationEngine(
         )
         val elapsed = state.statusElapsedSeconds + dt
         val occupancyMultiplier = if (scenario.mechanicVersions.reducedVisibility > 0) {
-            WeatherOperations.runwayOccupancyMultiplier(scenario.weather.visibilityKm)
+            WeatherOperations.runwayOccupancyMultiplier(currentWeather.visibilityKm)
         } else {
             1.0
         }
@@ -625,9 +1330,22 @@ class AtcSimulationEngine(
             )
         }
 
-        clearRunwayIfOccupiedBy(runway.id, state.id)
+        clearRunwayIfOccupiedBy(runway.id, state.id, events)
         awardArrival(state.copy(distanceTravelledNm = state.distanceTravelledNm + distance))
         events += GameEvent.Landed(state.id, runway.id, elapsedSeconds)
+        val completedHandoff = state.handoff
+            ?.takeIf { it.direction == HandoffDirection.INBOUND }
+            ?.copy(status = HandoffStatus.COMPLETED)
+            ?: state.handoff
+        if (completedHandoff != state.handoff && completedHandoff != null) {
+            events += GameEvent.HandoffChanged(
+                state.id,
+                completedHandoff.sectorId,
+                completedHandoff.direction,
+                completedHandoff.status,
+                elapsedSeconds,
+            )
+        }
         return state.copy(
             status = AircraftStatus.LANDED,
             position = position,
@@ -638,6 +1356,7 @@ class AtcSimulationEngine(
             clearance = Clearance.None,
             distanceTravelledNm = state.distanceTravelledNm + distance,
             statusElapsedSeconds = 0.0,
+            handoff = completedHandoff,
         )
     }
 
@@ -657,7 +1376,8 @@ class AtcSimulationEngine(
             state.type.descentRateFeetPerMinute / 60.0
         }
         val altitude = moveTowards(state.altitudeFeet, state.targetAltitudeFeet, altitudeRate * dt)
-        val navigated = navigateRoute(state, speed, dt)
+        val holdNavigation = state.hold?.let { navigateHold(state, speed, dt, events) }
+        val navigated = holdNavigation?.navigation ?: navigateRoute(state, speed, dt)
         var updated = state.copy(
             position = navigated.position,
             headingDegrees = navigated.headingDegrees,
@@ -666,7 +1386,13 @@ class AtcSimulationEngine(
             routeIndex = navigated.routeIndex,
             distanceTravelledNm = state.distanceTravelledNm + navigated.distanceTravelledNm,
             statusElapsedSeconds = state.statusElapsedSeconds + dt,
+            status = holdNavigation?.status ?: state.status,
+            hold = holdNavigation?.hold ?: state.hold,
+            holdAccumulatedSeconds = state.holdAccumulatedSeconds +
+                if (holdNavigation?.hold?.established == true) dt else 0.0,
         )
+
+        updated = advanceHandoff(updated, events)
 
         if (updated.operation == FlightOperation.ARRIVAL && updated.clearance is Clearance.Land) {
             updated = evaluateApproach(updated, events)
@@ -676,10 +1402,140 @@ class AtcSimulationEngine(
         } else if (updated.operation == FlightOperation.ARRIVAL && isLeavingMap(updated)) {
             events += GameEvent.AircraftLeftAirspace(updated.id, elapsedSeconds)
             updated = updated.copy(status = AircraftStatus.EXITED, clearance = Clearance.None)
+            flightOutcomes[updated.id] = FlightOutcome.LOST
+            completionTimes[updated.id] = elapsedSeconds
             issueStrike(setOf(updated.id), events)
             fail(FailureReason.AIRCRAFT_LOST, events)
         }
         return updated
+    }
+
+    private fun navigateHold(
+        state: AircraftState,
+        speedKnots: Double,
+        dt: Double,
+        events: MutableList<GameEvent>,
+    ): HoldNavigationResult {
+        val hold = checkNotNull(state.hold)
+        if (!hold.established) {
+            val towardFix = navigateRoute(
+                state.copy(route = Route(listOf(hold.fix)), routeIndex = 0),
+                speedKnots,
+                dt,
+            )
+            val established = Navigation.distanceNm(
+                towardFix.position,
+                hold.fix,
+                scenario.mapWidthNm,
+                scenario.mapHeightNm,
+            ) <= max(parameters.waypointCaptureNm, HOLD_CAPTURE_NM)
+            if (!established) {
+                return HoldNavigationResult(towardFix.copy(routeIndex = state.routeIndex), hold, state.status)
+            }
+            val establishedHold = hold.copy(established = true, elapsedSeconds = 0.0)
+            events += GameEvent.HoldEstablished(state.id, hold.fix, elapsedSeconds)
+            return HoldNavigationResult(
+                NavigationResult(
+                    position = hold.fix,
+                    headingDegrees = Navigation.normalizeHeading(hold.inboundCourseDegrees + 180.0),
+                    routeIndex = state.routeIndex,
+                    distanceTravelledNm = towardFix.distanceTravelledNm,
+                ),
+                establishedHold,
+                AircraftStatus.HOLDING,
+            )
+        }
+
+        val turnSeconds = HOLD_TURN_SECONDS
+        val cycleSeconds = hold.legSeconds * 2.0 + turnSeconds * 2.0
+        val nextElapsed = hold.elapsedSeconds + dt
+        val phase = nextElapsed % cycleSeconds
+        val turnSign = if (hold.turnDirection == HoldTurnDirection.RIGHT) 1.0 else -1.0
+        val outbound = Navigation.normalizeHeading(hold.inboundCourseDegrees + 180.0)
+        val targetHeading = when {
+            phase < hold.legSeconds -> outbound
+            phase < hold.legSeconds + turnSeconds -> Navigation.normalizeHeading(
+                outbound + turnSign * 180.0 * ((phase - hold.legSeconds) / turnSeconds),
+            )
+            phase < hold.legSeconds * 2.0 + turnSeconds -> hold.inboundCourseDegrees
+            else -> Navigation.normalizeHeading(
+                hold.inboundCourseDegrees + turnSign * 180.0 *
+                    ((phase - hold.legSeconds * 2.0 - turnSeconds) / turnSeconds),
+            )
+        }
+        val heading = Navigation.turnTowards(
+            state.headingDegrees,
+            targetHeading,
+            state.type.turnRateDegreesPerSecond * dt,
+        )
+        val start = state.position
+        var position = Navigation.move(
+            start,
+            heading,
+            speedKnots * dt / 3_600.0,
+            scenario.mapWidthNm,
+            scenario.mapHeightNm,
+        )
+        if (scenario.mechanicVersions.windDrift > 0 && currentWeather.windSpeedKnots > 0.0) {
+            position = Navigation.move(
+                position,
+                currentWeather.windDirectionDegrees + 180.0,
+                currentWeather.windSpeedKnots * dt / 3_600.0,
+                scenario.mapWidthNm,
+                scenario.mapHeightNm,
+            )
+        }
+        return HoldNavigationResult(
+            NavigationResult(
+                position,
+                heading,
+                state.routeIndex,
+                Navigation.distanceNm(start, position, scenario.mapWidthNm, scenario.mapHeightNm),
+            ),
+            hold.copy(elapsedSeconds = nextElapsed),
+            AircraftStatus.HOLDING,
+        )
+    }
+
+    private fun advanceHandoff(
+        state: AircraftState,
+        events: MutableList<GameEvent>,
+    ): AircraftState {
+        if (scenario.mechanicVersions.proceduralControl == 0) return state
+        val handoff = state.handoff ?: return state
+        val age = elapsedSeconds - handoff.requestedAtSeconds
+        return when {
+            handoff.status == HandoffStatus.REQUESTED && age + EPSILON >= HANDOFF_ACK_SECONDS -> {
+                val acknowledged = handoff.copy(status = HandoffStatus.ACKNOWLEDGED)
+                events += GameEvent.HandoffChanged(
+                    state.id,
+                    acknowledged.sectorId,
+                    acknowledged.direction,
+                    acknowledged.status,
+                    elapsedSeconds,
+                )
+                state.copy(handoff = acknowledged)
+            }
+            handoff.status in setOf(HandoffStatus.OFFERED, HandoffStatus.ACKNOWLEDGED) &&
+                age + EPSILON >= HANDOFF_TIMEOUT_SECONDS -> {
+                val timedOut = handoff.copy(status = HandoffStatus.TIMED_OUT)
+                val penalty = scenario.scoring.proceduralControlPenaltyPoints
+                score = score.copy(
+                    penalties = saturatingAdd(score.penalties, penalty),
+                    proceduralPenaltyPoints = saturatingAdd(score.proceduralPenaltyPoints, penalty),
+                )
+                addAircraftPenalty(state.id, penalty)
+                events += GameEvent.HandoffChanged(
+                    state.id,
+                    timedOut.sectorId,
+                    timedOut.direction,
+                    timedOut.status,
+                    elapsedSeconds,
+                )
+                state.copy(handoff = timedOut)
+            }
+            else -> state
+        }
     }
 
     private fun navigateRoute(state: AircraftState, speedKnots: Double, dt: Double): NavigationResult {
@@ -717,12 +1573,12 @@ class AtcSimulationEngine(
             scenario.mapWidthNm,
             scenario.mapHeightNm,
         )
-        val driftedPosition = if (scenario.mechanicVersions.windDrift > 0 && scenario.weather.windSpeedKnots > 0.0) {
+        val driftedPosition = if (scenario.mechanicVersions.windDrift > 0 && currentWeather.windSpeedKnots > 0.0) {
             // Wind direction is the meteorological direction it comes from.
             Navigation.move(
                 movedPosition,
-                scenario.weather.windDirectionDegrees + 180.0,
-                scenario.weather.windSpeedKnots * dt / 3_600.0,
+                currentWeather.windDirectionDegrees + 180.0,
+                currentWeather.windSpeedKnots * dt / 3_600.0,
                 scenario.mapWidthNm,
                 scenario.mapHeightNm,
             )
@@ -790,7 +1646,7 @@ class AtcSimulationEngine(
             onApproachSide &&
             movingTowardThreshold
         if (scenario.mechanicVersions.reducedVisibility > 0) {
-            val gate = WeatherOperations.stabilizedApproachGateNm(scenario.weather.visibilityKm)
+            val gate = WeatherOperations.stabilizedApproachGateNm(currentWeather.visibilityKm)
             val stabilized = inCapture &&
                 state.speedKnots <= state.type.maxLandingSpeedKnots + 10.0 &&
                 state.altitudeFeet <= max(parameters.maxTouchdownAltitudeFeet, distanceToThreshold * 900.0)
@@ -819,7 +1675,11 @@ class AtcSimulationEngine(
             events += GameEvent.RunwayIncursion(runway.id, occupants, elapsedSeconds)
             aircraft[physicalOccupant]?.let { occupant ->
                 aircraft[occupant.id] = occupant.copy(status = AircraftStatus.CRASHED)
+                flightOutcomes[occupant.id] = FlightOutcome.CRASHED
+                completionTimes[occupant.id] = elapsedSeconds
             }
+            flightOutcomes[state.id] = FlightOutcome.CRASHED
+            completionTimes[state.id] = elapsedSeconds
             fail(FailureReason.RUNWAY_INCURSION, events)
             return updated.copy(status = AircraftStatus.CRASHED)
         }
@@ -860,6 +1720,7 @@ class AtcSimulationEngine(
             routeIndex = 0,
             clearance = clearance,
             statusElapsedSeconds = 0.0,
+            hold = null,
         )
         aircraft[state.id] = updated
         val penalty = if (automatic) {
@@ -869,6 +1730,7 @@ class AtcSimulationEngine(
         }
         score = score.copy(penalties = saturatingAdd(score.penalties, penalty))
         score = score.copy(goAroundPenaltyPoints = saturatingAdd(score.goAroundPenaltyPoints, penalty))
+        addAircraftPenalty(state.id, penalty)
         events += GameEvent.ClearanceIssued(state.id, clearance, elapsedSeconds)
         events += GameEvent.GoAround(state.id, automatic, elapsedSeconds)
         return updated
@@ -886,10 +1748,54 @@ class AtcSimulationEngine(
             scenario.mapHeightNm,
         ) <= parameters.exitCaptureNm
         if (!atCorrectExit && !isLeavingMap(state)) return state
-        val correct = atCorrectExit
-        val exited = state.copy(status = AircraftStatus.EXITED, clearance = Clearance.None)
+        val procedural = scenario.mechanicVersions.proceduralControl > 0
+        val handoffComplete = state.handoff?.status == HandoffStatus.ACKNOWLEDGED
+        val correct = atCorrectExit && (!procedural || state.exitClearanceGranted && handoffComplete)
+        val completedHandoff = if (correct && state.handoff != null) {
+            state.handoff.copy(status = HandoffStatus.COMPLETED)
+        } else {
+            state.handoff
+        }
+        if (completedHandoff != state.handoff && completedHandoff != null) {
+            events += GameEvent.HandoffChanged(
+                state.id,
+                completedHandoff.sectorId,
+                completedHandoff.direction,
+                completedHandoff.status,
+                elapsedSeconds,
+            )
+        } else if (procedural && !correct && state.handoff?.status != HandoffStatus.TIMED_OUT) {
+            val failed = (state.handoff ?: HandoffState(
+                sectorId = "TERMINAL_EXIT",
+                direction = HandoffDirection.OUTBOUND,
+                status = HandoffStatus.TIMED_OUT,
+                requestedAtSeconds = elapsedSeconds,
+            )).copy(status = HandoffStatus.TIMED_OUT)
+            events += GameEvent.HandoffChanged(
+                state.id,
+                failed.sectorId,
+                failed.direction,
+                failed.status,
+                elapsedSeconds,
+            )
+        }
+        val exited = state.copy(
+            status = AircraftStatus.EXITED,
+            clearance = Clearance.None,
+            handoff = completedHandoff,
+        )
         awardDeparture(exited, correct)
-        events += GameEvent.AircraftExited(state.id, correct, elapsedSeconds)
+        if (procedural && atCorrectExit && !correct) {
+            val penalty = scenario.scoring.proceduralControlPenaltyPoints
+            score = score.copy(
+                penalties = saturatingAdd(score.penalties, penalty),
+                proceduralPenaltyPoints = saturatingAdd(score.proceduralPenaltyPoints, penalty),
+            )
+            addAircraftPenalty(state.id, penalty)
+        }
+        flightOutcomes[state.id] = if (correct) FlightOutcome.CORRECT_EXIT else FlightOutcome.WRONG_EXIT
+        completionTimes[state.id] = elapsedSeconds
+        events += GameEvent.AircraftExited(state.id, correct, desiredExit, elapsedSeconds)
         return exited
     }
 
@@ -967,6 +1873,10 @@ class AtcSimulationEngine(
         collision?.let { (conflict, key) ->
             aircraft[key.first]?.let { aircraft[key.first] = it.copy(status = AircraftStatus.CRASHED) }
             aircraft[key.second]?.let { aircraft[key.second] = it.copy(status = AircraftStatus.CRASHED) }
+            flightOutcomes[key.first] = FlightOutcome.CRASHED
+            flightOutcomes[key.second] = FlightOutcome.CRASHED
+            completionTimes[key.first] = elapsedSeconds
+            completionTimes[key.second] = elapsedSeconds
             events += GameEvent.Collision(conflict, elapsedSeconds)
             fail(FailureReason.COLLISION, events)
         }
@@ -996,6 +1906,7 @@ class AtcSimulationEngine(
                             penalties = saturatingAdd(score.penalties, penalty),
                             wakePenaltyPoints = saturatingAdd(score.wakePenaltyPoints, penalty),
                         )
+                        addAircraftPenalty(item.followerAircraftId, penalty)
                     }
                 }
                 item.actualSeconds < item.requiredSeconds + WAKE_WARNING_MARGIN_SECONDS -> {
@@ -1162,6 +2073,7 @@ class AtcSimulationEngine(
                 scenario.scoring.conflictPenaltyPoints,
             ),
         )
+        aircraftIds.forEach { addAircraftPenalty(it, scenario.scoring.conflictPenaltyPoints) }
         events += GameEvent.StrikeIssued(aircraftIds, elapsedSeconds)
         if (strikes >= scenario.maxStrikes || strikes > scenario.objectives.maximumStrikes) {
             fail(FailureReason.TOO_MANY_STRIKES, events)
@@ -1171,6 +2083,10 @@ class AtcSimulationEngine(
     private fun awardArrival(state: AircraftState) {
         val efficiency = efficiencyPoints(state)
         val bonus = timeBonus(state)
+        efficiencyByAircraft[state.id] = efficiency
+        timeBonusByAircraft[state.id] = bonus
+        flightOutcomes[state.id] = FlightOutcome.LANDED
+        completionTimes[state.id] = elapsedSeconds
         score = score.copy(
             safeArrivals = score.safeArrivals + 1,
             basePoints = saturatingAdd(score.basePoints, scenario.scoring.safeArrivalPoints),
@@ -1182,6 +2098,9 @@ class AtcSimulationEngine(
     private fun awardDeparture(state: AircraftState, correctExit: Boolean) {
         val efficiency = efficiencyPoints(state)
         val bonus = timeBonus(state)
+        efficiencyByAircraft[state.id] = efficiency
+        timeBonusByAircraft[state.id] = bonus
+        if (!correctExit) addAircraftPenalty(state.id, scenario.scoring.missedExitPenaltyPoints)
         score = score.copy(
             safeDepartures = score.safeDepartures + 1,
             basePoints = saturatingAdd(score.basePoints, scenario.scoring.safeDeparturePoints),
@@ -1225,6 +2144,10 @@ class AtcSimulationEngine(
             aircraft.values.all { it.status.isTerminal() }
         val operationalObjectivesMet = countsMet &&
             strikes <= objectives.maximumStrikes &&
+            dynamicEventStates.values.all {
+                it.lifecycle in setOf(DynamicEventLifecycle.RESOLVED, DynamicEventLifecycle.FAILED)
+            } &&
+            weatherChangeStates.values.all { it.lifecycle == WeatherChangeLifecycle.APPLIED } &&
             (!objectives.completeWhenAllTrafficResolved || allTrafficResolved)
         if (operationalObjectivesMet &&
             score.completionBonusPoints != scenario.scoring.completionBonusPoints
@@ -1257,7 +2180,14 @@ class AtcSimulationEngine(
         events += GameEvent.CommandRejected(aircraftId, reason, elapsedSeconds, code)
     }
 
-    private fun clearRunwayIfOccupiedBy(runwayId: String, aircraftId: String) {
+    private fun Vec2.isValidRouteWaypoint(): Boolean =
+        x.isFinite() && y.isFinite() && x in 0.0..1.0 && y in 0.0..1.0
+
+    private fun clearRunwayIfOccupiedBy(
+        runwayId: String,
+        aircraftId: String,
+        events: MutableList<GameEvent>,
+    ) {
         val runway = runways[runwayId] ?: return
         if (physicalOccupant(runway) == aircraftId) {
             runways.entries.forEach { (id, end) ->
@@ -1265,6 +2195,12 @@ class AtcSimulationEngine(
                     runways[id] = end.copy(occupiedByAircraftId = null)
                 }
             }
+            events += GameEvent.RunwayVacated(
+                physicalRunwayId = runway.physicalRunwayId,
+                runwayEndId = runway.id,
+                aircraftId = aircraftId,
+                elapsedSeconds = elapsedSeconds,
+            )
         }
     }
 
@@ -1287,12 +2223,20 @@ class AtcSimulationEngine(
         aircraftId: String,
         events: MutableList<GameEvent>,
     ) {
+        val alreadyOccupiedByAircraft = physicalOccupant(runway) == aircraftId
         runways.entries.forEach { (id, end) ->
             if (end.physicalRunwayId == runway.physicalRunwayId) {
                 runways[id] = end.copy(occupiedByAircraftId = aircraftId)
             }
         }
-        events += GameEvent.RunwayOccupied(runway.physicalRunwayId, runway.id, aircraftId, elapsedSeconds)
+        if (!alreadyOccupiedByAircraft) {
+            events += GameEvent.RunwayOccupied(
+                runway.physicalRunwayId,
+                runway.id,
+                aircraftId,
+                elapsedSeconds,
+            )
+        }
     }
 
     private fun RunwayState.accepts(type: AircraftType): Boolean =
@@ -1303,7 +2247,8 @@ class AtcSimulationEngine(
         is Clearance.LineUpAndWait -> this.runwayId == runwayId
         is Clearance.Land -> this.runwayId == runwayId
         is Clearance.Takeoff -> this.runwayId == runwayId
-        is Clearance.GoAround, Clearance.None -> true
+        is Clearance.GoAround, is Clearance.Hold, is Clearance.Exit,
+        is Clearance.CrossRunway, Clearance.None -> true
     }
 
     private fun rememberEvents(events: List<GameEvent>) {
@@ -1363,10 +2308,52 @@ class AtcSimulationEngine(
             starScoreThresholds = scenario.objectives.starScoreThresholds.toList(),
         ),
         maxDurationSeconds = scenario.maxDurationSeconds,
-        weather = scenario.weather,
+        weather = currentWeather,
         mechanicVersions = scenario.mechanicVersions,
         wakeSpacing = currentWakeSpacing(),
+        dynamicEventStates = dynamicEventStates.values.toList(),
+        weatherChangeStates = weatherChangeStates.values.toList(),
+        flightPerformances = if (status == GameStatus.COMPLETED || status == GameStatus.FAILED) {
+            aircraft.values.sortedBy { it.id }.map(::flightPerformance)
+        } else {
+            emptyList()
+        },
+        routeHistory = if (status == GameStatus.COMPLETED || status == GameStatus.FAILED) {
+            routeHistory.mapValues { (_, points) -> points.toList() }
+        } else {
+            emptyMap()
+        },
     )
+
+    private fun flightPerformance(state: AircraftState): FlightPerformance = FlightPerformance(
+        aircraftId = state.id,
+        callsign = state.callsign,
+        operation = state.operation,
+        outcome = flightOutcomes[state.id] ?: when (state.status) {
+            AircraftStatus.LANDED -> FlightOutcome.LANDED
+            AircraftStatus.CRASHED -> FlightOutcome.CRASHED
+            else -> FlightOutcome.ACTIVE
+        },
+        handlingSeconds = (completionTimes[state.id] ?: elapsedSeconds) -
+            spawnTimes.getOrDefault(state.id, elapsedSeconds),
+        distanceTravelledNm = state.distanceTravelledNm,
+        minimumUsefulDistanceNm = minimumDistances.getOrDefault(state.id, 0.0),
+        efficiencyPoints = efficiencyByAircraft[state.id] ?: 0,
+        timeBonusPoints = timeBonusByAircraft[state.id] ?: 0,
+        associatedPenaltyPoints = penaltyByAircraft[state.id] ?: 0,
+        holdSeconds = state.holdAccumulatedSeconds,
+    )
+
+    private fun addAircraftPenalty(aircraftId: String, points: Int) {
+        penaltyByAircraft[aircraftId] = saturatingAdd(penaltyByAircraft[aircraftId] ?: 0, points)
+    }
+
+    private fun recordRouteHistory() {
+        aircraft.values.forEach { state ->
+            val points = routeHistory.getOrPut(state.id) { mutableListOf() }
+            if (points.lastOrNull() != state.position) points += state.position
+        }
+    }
 
     private fun currentWakeSpacing(): List<WakeSpacing> {
         if (scenario.mechanicVersions.wakeTurbulence == 0) return emptyList()
@@ -1433,6 +2420,8 @@ class AtcSimulationEngine(
         runways = runways.toList(),
         traffic = traffic.map { it.copy(aircraft = it.aircraft.deepCopy()) },
         objectives = objectives.copy(starScoreThresholds = objectives.starScoreThresholds.toList()),
+        dynamicEvents = dynamicEvents.toList(),
+        weatherChanges = weatherChanges.toList(),
     )
 
     private fun AircraftState.deepCopy() = copy(route = Route(route.waypoints.toList()))
@@ -1441,6 +2430,7 @@ class AtcSimulationEngine(
         AircraftStatus.INBOUND,
         AircraftStatus.APPROACH,
         AircraftStatus.GO_AROUND,
+        AircraftStatus.HOLDING,
         AircraftStatus.HOLDING_SHORT,
         AircraftStatus.LINED_UP,
         AircraftStatus.DEPARTING,
@@ -1450,6 +2440,7 @@ class AtcSimulationEngine(
         AircraftStatus.INBOUND,
         AircraftStatus.APPROACH,
         AircraftStatus.GO_AROUND,
+        AircraftStatus.HOLDING,
         AircraftStatus.DEPARTING,
     )
 
@@ -1457,7 +2448,9 @@ class AtcSimulationEngine(
         AircraftStatus.INBOUND,
         AircraftStatus.APPROACH,
         AircraftStatus.GO_AROUND,
+        AircraftStatus.HOLDING,
         AircraftStatus.HOLDING_SHORT,
+        AircraftStatus.CROSSING_RUNWAY,
         AircraftStatus.LINED_UP,
         AircraftStatus.TAKEOFF_ROLL,
         AircraftStatus.DEPARTING,
@@ -1487,6 +2480,12 @@ class AtcSimulationEngine(
         val headingDegrees: Double,
         val routeIndex: Int,
         val distanceTravelledNm: Double,
+    )
+
+    private data class HoldNavigationResult(
+        val navigation: NavigationResult,
+        val hold: HoldState,
+        val status: AircraftStatus,
     )
 
     private data class TimeInterval(val start: Double, val end: Double) {
@@ -1520,9 +2519,17 @@ class AtcSimulationEngine(
 
     companion object {
         const val EPSILON = 1e-9
+        /** Retain the newest 200 structured events; older entries are deterministically evicted. */
         const val EVENT_HISTORY_CAPACITY = 200
         const val MAX_ROUTE_WAYPOINTS = 64
+        const val ROUTE_HISTORY_SAMPLE_TICKS = 10L
         const val WAKE_WARNING_MARGIN_SECONDS = 30.0
+        const val HOLD_CAPTURE_NM = 0.12
+        const val HOLD_TURN_SECONDS = 20.0
+        const val HANDOFF_ACK_SECONDS = 5.0
+        const val HANDOFF_TIMEOUT_SECONDS = 90.0
+        const val LOW_FUEL_PRIORITY_SECONDS = 150.0
+        const val RUNWAY_CROSSING_SECONDS = 12.0
         val SPEEDS = doubleArrayOf(0.5, 1.0, 2.0)
 
         fun moveTowards(current: Double, target: Double, maximumDelta: Double): Double = when {

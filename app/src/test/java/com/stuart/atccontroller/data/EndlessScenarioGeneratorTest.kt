@@ -70,6 +70,22 @@ class EndlessScenarioGeneratorTest {
         }
     }
 
+    @Test
+    fun everyRegisteredPackHasIsolatedDeterministicEndlessContent() {
+        ContentRegistry.packs.forEach { pack ->
+            val first = EndlessScenarioGenerator.generate(91, 6, pack.id)
+            val second = EndlessScenarioGenerator.generate(91, 6, pack.id)
+
+            assertEquals(first, second)
+            assertEquals(pack.airport.id, first.airportId)
+            assertTrue(ScenarioValidator.validate(first).isValid)
+            assertTrue(first.traffic.all { traffic ->
+                traffic.runwayEndId in pack.airport.runwayEnds.map { it.id } &&
+                    (traffic.entryFixId ?: traffic.exitFixId) in pack.airport.fixes.map { it.id }
+            })
+        }
+    }
+
     private fun averageSpawnGap(scenario: ScenarioDefinition): Double = scenario.traffic
         .zipWithNext { first, second -> second.spawnAtSeconds - first.spawnAtSeconds }
         .average()
