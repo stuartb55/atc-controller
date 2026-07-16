@@ -77,6 +77,18 @@ class PhaseZeroPresentationTest {
     }
 
     @Test
+    fun failedMissionForecastMatchesTheZeroStarsAwardedByTheResult() {
+        assertEquals(
+            StarForecastUiModel(starsAvailable = false),
+            starForecastFor(
+                score = 450,
+                thresholds = listOf(200, 300, 400),
+                starsAvailable = false,
+            ),
+        )
+    }
+
+    @Test
     fun trafficCountdownUsesDeterministicCeilingAndNeverBecomesNegative() {
         assertEquals(6, secondsUntilEntry(spawnAtSeconds = 10.0, elapsedSeconds = 4.1))
         assertEquals(0, secondsUntilEntry(spawnAtSeconds = 10.0, elapsedSeconds = 10.0))

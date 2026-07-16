@@ -85,6 +85,27 @@ class AtcControllerAppTest {
     }
 
     @Test
+    fun compactGameRetainsLiveObjectivesForecastAndUpcomingTraffic() {
+        val viewModel = TestGameController()
+        viewModel.onAction(GameAction.StartSelectedMission)
+        viewModel.onAction(GameAction.DismissTutorial)
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 640.dp)) {
+                    AtcControllerApp(viewModel.uiState, viewModel::onAction)
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("2 movements remaining").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("04:01 remaining").assertIsDisplayed()
+        composeRule.onNodeWithText("1 star secured").assertIsDisplayed()
+        composeRule.onNodeWithText("800 points to next star").assertIsDisplayed()
+        composeRule.onNodeWithText("○ Safe movements 1/3").assertIsDisplayed()
+        composeRule.onNodeWithText("JET 42 · Arrival · 12s").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
     fun compactPortraitSettingsKeepEveryControlReachable() {
         val viewModel = TestGameController()
         viewModel.onAction(GameAction.Navigate(AppScreen.SETTINGS))
@@ -268,4 +289,25 @@ private fun testGameUiState() = GameUiState(
         FixUiModel("MIRSI", NormalizedPoint(.10f, .18f)),
         FixUiModel("I-23R", NormalizedPoint(.73f, .73f), FixKind.APPROACH),
     ),
+    objectiveProgress = listOf(
+        ObjectiveProgressUiModel(
+            id = "movements",
+            kind = ObjectiveProgressKind.SAFE_MOVEMENTS,
+            current = 1,
+            target = 3,
+            passed = false,
+        ),
+    ),
+    movementsRemaining = 2,
+    missionTimeRemainingSeconds = 241,
+    upcomingTraffic = listOf(
+        UpcomingTrafficUiModel(
+            aircraftId = "JET42",
+            callsign = "JET 42",
+            intent = UpcomingTrafficIntent.ARRIVAL,
+            runwayId = "23R",
+            secondsToEntry = 12,
+        ),
+    ),
+    starForecast = StarForecastUiModel(securedStars = 1, pointsToNextStar = 800),
 )

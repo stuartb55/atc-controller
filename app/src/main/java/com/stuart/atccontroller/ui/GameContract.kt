@@ -160,6 +160,8 @@ data class FlightStripUiModel(
 data class StarForecastUiModel(
     val securedStars: Int = 0,
     val pointsToNextStar: Int? = null,
+    /** False once the attempt has failed and its score can no longer award mission stars. */
+    val starsAvailable: Boolean = true,
 )
 
 data class WeatherImpactUiModel(

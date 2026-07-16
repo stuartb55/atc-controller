@@ -305,6 +305,7 @@
         <item quantity="other">%1$d points to next star</item>
     </plurals>
     <string name="maximum_stars_secured">Maximum stars secured</string>
+    <string name="stars_not_awarded">Mission failed — stars not awarded</string>
     <string name="upcoming_traffic">Next traffic</string>
     <string name="traffic_due">%1$s · %2$s · %3$ds</string>
     <string name="no_more_scheduled_traffic">No more scheduled traffic</string>

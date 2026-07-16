@@ -1852,9 +1852,15 @@ private fun OperationsOverview(state: GameUiState) {
             Text(
                 state.starForecast.pointsToNextStar?.let {
                     pluralStringResource(R.plurals.points_to_next_star, it, it)
-                } ?: stringResource(R.string.maximum_stars_secured),
+                } ?: stringResource(
+                    if (state.starForecast.starsAvailable) {
+                        R.string.maximum_stars_secured
+                    } else {
+                        R.string.stars_not_awarded
+                    },
+                ),
                 style = MaterialTheme.typography.labelSmall,
-                color = colors.muted,
+                color = if (state.starForecast.starsAvailable) colors.muted else colors.red,
             )
             state.objectiveProgress.forEach { objective ->
                 val label = stringResource(when (objective.kind) {

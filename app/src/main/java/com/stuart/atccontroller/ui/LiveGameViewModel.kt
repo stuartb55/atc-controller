@@ -1410,6 +1410,7 @@ class LiveGameViewModel internal constructor(
             starForecast = starForecastFor(
                 score = snapshot.score.total,
                 thresholds = snapshot.objectives.starScoreThresholds,
+                starsAvailable = snapshot.status != GameStatus.FAILED,
             ),
             weatherImpact = snapshot.toWeatherImpact(),
             training = trainingUi(snapshot),
@@ -3275,7 +3276,12 @@ internal fun retainedConflictIndex(
     ?.takeIf { it >= 0 }
     ?: 0
 
-internal fun starForecastFor(score: Int, thresholds: List<Int>): StarForecastUiModel {
+internal fun starForecastFor(
+    score: Int,
+    thresholds: List<Int>,
+    starsAvailable: Boolean = true,
+): StarForecastUiModel {
+    if (!starsAvailable) return StarForecastUiModel(starsAvailable = false)
     val securedStars = thresholds.count { score >= it }
     return StarForecastUiModel(
         securedStars = securedStars,
