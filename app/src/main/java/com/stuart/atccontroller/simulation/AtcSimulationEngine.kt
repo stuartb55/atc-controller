@@ -43,6 +43,7 @@ class AtcSimulationEngine(
     private var previousWakeViolationPairs = emptySet<PairKey>()
     private var lastEvents = emptyList<GameEvent>()
     private val eventHistory = ArrayDeque<GameEvent>()
+    private var recordedEventCount = 0L
 
     init {
         this.scenario.runways.forEach { runways[it.id] = it.copy(occupiedByAircraftId = null) }
@@ -1308,6 +1309,7 @@ class AtcSimulationEngine(
     private fun rememberEvents(events: List<GameEvent>) {
         events.forEach { event ->
             eventHistory.addLast(event)
+            recordedEventCount += 1L
             while (eventHistory.size > EVENT_HISTORY_CAPACITY) eventHistory.removeFirst()
         }
     }
@@ -1347,6 +1349,7 @@ class AtcSimulationEngine(
         pendingAircraftCount = resolvedTraffic.size - nextSpawnIndex,
         events = events.toList(),
         eventHistory = eventHistory.toList(),
+        eventHistoryStartSequence = recordedEventCount - eventHistory.size,
         upcomingAircraft = resolvedTraffic.drop(nextSpawnIndex).take(3).map { spawn ->
             UpcomingAircraft(
                 aircraftId = spawn.aircraft.id,

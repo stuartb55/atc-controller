@@ -137,4 +137,24 @@ class OperationalDepthTest {
 
         assertEquals(AtcSimulationEngine.EVENT_HISTORY_CAPACITY, engine.snapshot.eventHistory.size)
     }
+
+    @Test
+    fun `bounded event history retains stable sequence numbers after eviction`() {
+        val engine = engineWith(arrival("A"))
+        engine.submit(PlayerCommand.Start)
+        repeat(AtcSimulationEngine.EVENT_HISTORY_CAPACITY + 20) { index ->
+            engine.submit(
+                PlayerCommand.SetRoute(
+                    "A",
+                    Route(listOf(Vec2(if (index % 2 == 0) .2 else .3, .2))),
+                ),
+            )
+        }
+
+        val snapshot = engine.snapshot
+        val lastSequence = snapshot.eventHistoryStartSequence + snapshot.eventHistory.lastIndex
+
+        assertEquals(21L, snapshot.eventHistoryStartSequence)
+        assertEquals(220L, lastSequence)
+    }
 }

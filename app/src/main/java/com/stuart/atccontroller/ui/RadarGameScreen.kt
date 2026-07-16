@@ -63,6 +63,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -162,6 +163,8 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
 @Composable
 private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit) {
     val colors = MaterialTheme.atcColors
+    val replayStartDescription = stringResource(R.string.replay_seek_start)
+    val replayEndDescription = stringResource(R.string.replay_seek_end)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = colors.panel,
@@ -182,10 +185,20 @@ private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit
             TextButton(onClick = { onAction(GameAction.ReplayStep) }) {
                 Text(stringResource(R.string.replay_step), color = colors.green)
             }
-            TextButton(onClick = { onAction(GameAction.ReplaySeek(0)) }) {
+            TextButton(
+                onClick = { onAction(GameAction.ReplaySeek(0)) },
+                modifier = Modifier.semantics {
+                    contentDescription = replayStartDescription
+                },
+            ) {
                 Text("|‹", color = colors.muted)
             }
-            TextButton(onClick = { onAction(GameAction.ReplaySeek(replay.terminalTick)) }) {
+            TextButton(
+                onClick = { onAction(GameAction.ReplaySeek(replay.terminalTick)) },
+                modifier = Modifier.semantics {
+                    contentDescription = replayEndDescription
+                },
+            ) {
                 Text("›|", color = colors.muted)
             }
             Text(
@@ -194,6 +207,23 @@ private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit
                 color = colors.white,
                 modifier = Modifier.weight(1f),
             )
+            if (replay.verification != ReplayVerification.PENDING) {
+                Text(
+                    stringResource(
+                        if (replay.verification == ReplayVerification.VERIFIED) {
+                            R.string.replay_verified
+                        } else {
+                            R.string.replay_verification_failed
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (replay.verification == ReplayVerification.VERIFIED) {
+                        colors.green
+                    } else {
+                        colors.red
+                    },
+                )
+            }
             listOf(1, 2, 4).forEach { speed ->
                 TextButton(onClick = { onAction(GameAction.ReplaySetSpeed(speed)) }) {
                     Text("${speed}×", color = if (replay.speed == speed) colors.cyan else colors.muted)
@@ -1610,7 +1640,11 @@ private fun OperationsOverview(state: GameUiState) {
             SectionLabel(stringResource(R.string.live_operations))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    stringResource(R.string.movements_remaining, state.movementsRemaining),
+                    pluralStringResource(
+                        R.plurals.movements_remaining,
+                        state.movementsRemaining,
+                        state.movementsRemaining,
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.white,
                     modifier = Modifier.weight(1f),
@@ -1625,13 +1659,17 @@ private fun OperationsOverview(state: GameUiState) {
                 )
             }
             Text(
-                stringResource(R.string.secured_stars, state.starForecast.securedStars),
+                pluralStringResource(
+                    R.plurals.secured_stars,
+                    state.starForecast.securedStars,
+                    state.starForecast.securedStars,
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.amber,
             )
             Text(
                 state.starForecast.pointsToNextStar?.let {
-                    stringResource(R.string.points_to_next_star, it)
+                    pluralStringResource(R.plurals.points_to_next_star, it, it)
                 } ?: stringResource(R.string.maximum_stars_secured),
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.muted,
@@ -1734,29 +1772,83 @@ private fun FlightStripBoard(state: GameUiState, onAction: (GameAction) -> Unit)
 @Composable
 private fun EventFeed(state: GameUiState, onAction: (GameAction) -> Unit) {
     val colors = MaterialTheme.atcColors
+    val resources = LocalResources.current
+    var historyVisible by remember { mutableStateOf(false) }
+    val visibleEntries = if (historyVisible) state.eventFeed else state.eventFeed.takeLast(5)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        SectionLabel(stringResource(R.string.event_feed))
-        state.eventFeed.takeLast(5).asReversed().forEach { entry ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel(stringResource(R.string.event_feed))
+            Spacer(Modifier.weight(1f))
+            if (state.eventFeed.size > 5) {
+                TextButton(onClick = { historyVisible = !historyVisible }) {
+                    Text(
+                        stringResource(
+                            if (historyVisible) R.string.show_latest_events else R.string.show_event_history,
+                        ).uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                    )
+                }
+            }
+        }
+        visibleEntries.asReversed().forEach { entry ->
             val accent = when (entry.severity) {
                 EventFeedSeverity.ROUTINE -> colors.muted
                 EventFeedSeverity.SUCCESS -> colors.green
                 EventFeedSeverity.WARNING -> colors.amber
                 EventFeedSeverity.CRITICAL -> colors.red
             }
+            val selectableAircraft = entry.aircraftIds.mapNotNull { aircraftId ->
+                state.aircraft.firstOrNull { it.id == aircraftId }
+            }
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 48.dp)
-                    .clickable(enabled = entry.aircraftIds.isNotEmpty()) {
-                        onAction(GameAction.SelectEvent(entry.sequence))
+                    .semantics {
+                        if (selectableAircraft.isNotEmpty()) role = Role.Button
+                        customActions = selectableAircraft.map { aircraft ->
+                            CustomAccessibilityAction(
+                                label = resources.getString(
+                                    R.string.select_aircraft_callsign,
+                                    aircraft.callsign,
+                                ),
+                                action = {
+                                    onAction(GameAction.SelectEvent(entry.sequence, aircraft.id))
+                                    true
+                                },
+                            )
+                        }
+                    }
+                    .clickable(enabled = selectableAircraft.isNotEmpty()) {
+                        onAction(GameAction.SelectEvent(entry.sequence, selectableAircraft.first().id))
                     },
                 color = colors.night.copy(alpha = .5f),
                 shape = RoundedCornerShape(7.dp),
             ) {
-                Row(Modifier.padding(7.dp), verticalAlignment = Alignment.Top) {
-                    Text(formatElapsed(entry.elapsedSeconds), style = MaterialTheme.typography.labelSmall, color = colors.muted)
-                    Spacer(Modifier.width(7.dp))
-                    Text(entry.caption, style = MaterialTheme.typography.labelSmall, color = accent)
+                Column(Modifier.padding(7.dp)) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(formatElapsed(entry.elapsedSeconds), style = MaterialTheme.typography.labelSmall, color = colors.muted)
+                        Spacer(Modifier.width(7.dp))
+                        Text(entry.caption, style = MaterialTheme.typography.labelSmall, color = accent)
+                    }
+                    if (selectableAircraft.size > 1) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            selectableAircraft.forEach { aircraft ->
+                                TextButton(
+                                    onClick = {
+                                        onAction(GameAction.SelectEvent(entry.sequence, aircraft.id))
+                                    },
+                                ) {
+                                    Text(
+                                        aircraft.callsign,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = colors.cyan,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

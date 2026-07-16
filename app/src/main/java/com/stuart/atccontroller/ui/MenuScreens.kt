@@ -527,9 +527,9 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
 private fun MissionBriefing(
     mission: MissionUiModel,
     compact: Boolean,
-    scrollContent: Boolean = true,
     onStart: () -> Unit,
     modifier: Modifier = Modifier,
+    scrollContent: Boolean = true,
 ) {
     val colors = MaterialTheme.atcColors
     val locale = LocalConfiguration.current.locales[0]
@@ -1139,7 +1139,7 @@ private fun ResultsPerformancePanel(
                 }
                 result.pointsToNextStar?.let { points ->
                     Text(
-                        stringResource(R.string.points_to_next_star, points),
+                        pluralStringResource(R.plurals.points_to_next_star, points, points),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.amber,
                     )

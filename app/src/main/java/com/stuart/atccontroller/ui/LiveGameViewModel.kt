@@ -469,12 +469,17 @@ class LiveGameViewModel internal constructor(
 
         val showTutorial = descriptor.selectionId == ManchesterContent.FIRST_MISSION_ID &&
             !playerData.progress.tutorialCompleted
+        val tutorialStep = playerData.trainingState
+            .takeIf { it.activeLessonId == content.tutorialFocus.name }
+            ?.activeStep
+            ?.takeIf { it in 0..LAST_TUTORIAL_STEP }
+            ?: 0
         pausedForTutorial = showTutorial
         uiState = uiState.copy(
             screen = AppScreen.GAME,
             selectedMissionId = descriptor.selectionId,
             selectedAircraftId = null,
-            tutorialStep = if (showTutorial) 0 else null,
+            tutorialStep = if (showTutorial) tutorialStep else null,
             result = null,
             canContinue = true,
             isRestoring = false,
@@ -562,6 +567,10 @@ class LiveGameViewModel internal constructor(
             checkpointingDisabled = false
             suppressPersistedSession = false
             pausedForTutorial = restored.restoreTutorial
+            val persistedTutorialStep = playerData.trainingState
+                .takeIf { it.activeLessonId == restored.content.tutorialFocus.name }
+                ?.activeStep
+                ?.takeIf { it in 0..LAST_TUTORIAL_STEP }
             uiState = uiState.copy(
                 screen = AppScreen.GAME,
                 selectedMissionId = saved.descriptor.selectionId,
@@ -569,7 +578,9 @@ class LiveGameViewModel internal constructor(
                     restored.snapshot.aircraft.any { it.id == selected && it.isUiVisible() }
                 },
                 tutorialStep = if (restored.restoreTutorial) {
-                    restoredTutorialState?.takeIf { it in 0..LAST_TUTORIAL_STEP } ?: 0
+                    restoredTutorialState?.takeIf { it in 0..LAST_TUTORIAL_STEP }
+                        ?: persistedTutorialStep
+                        ?: 0
                 } else {
                     null
                 },
@@ -742,10 +753,13 @@ class LiveGameViewModel internal constructor(
         } else {
             uiState = uiState.copy(tutorialStep = current + 1)
             persistUiState()
+            val trainingState = playerData.trainingState.copy(
+                activeLessonId = activeContent?.tutorialFocus?.name,
+                activeStep = current + 1,
+            )
+            playerData = playerData.copy(trainingState = trainingState)
             viewModelScope.launch {
-                preferences.saveTrainingState(
-                    TrainingState(activeLessonId = activeContent?.tutorialFocus?.name, activeStep = current + 1),
-                )
+                preferences.saveTrainingState(trainingState)
             }
         }
     }
@@ -760,14 +774,16 @@ class LiveGameViewModel internal constructor(
             pausedForTutorial = false
         }
         persistUiState()
-        viewModelScope.launch { preferences.setTutorialCompleted() }
+        val lesson = activeContent?.tutorialFocus?.name
+        val trainingState = playerData.trainingState.copy(
+            activeLessonId = null,
+            activeStep = 0,
+            completedLessonIds = playerData.trainingState.completedLessonIds + listOfNotNull(lesson),
+        )
+        playerData = playerData.copy(trainingState = trainingState)
         viewModelScope.launch {
-            val lesson = activeContent?.tutorialFocus?.name
-            preferences.saveTrainingState(
-                TrainingState(
-                    completedLessonIds = playerData.trainingState.completedLessonIds + listOfNotNull(lesson),
-                ),
-            )
+            preferences.setTutorialCompleted()
+            preferences.saveTrainingState(trainingState)
         }
     }
 
@@ -1011,9 +1027,10 @@ class LiveGameViewModel internal constructor(
 
     private fun GameSnapshot.toEventFeed(callsigns: Map<String, String>): List<EventFeedEntryUiModel> =
         eventHistory.takeLast(EVENT_FEED_CAPACITY).mapIndexed { index, event ->
+            val retainedOffset = (eventHistory.size - EVENT_FEED_CAPACITY).coerceAtLeast(0)
             val ids = event.aircraftIdsForPresentation()
             EventFeedEntryUiModel(
-                sequence = index.toLong(),
+                sequence = eventHistoryStartSequence + retainedOffset + index,
                 elapsedSeconds = event.elapsedSeconds.toInt(),
                 caption = event.toCaption(callsigns),
                 aircraftIds = ids,
@@ -1163,10 +1180,17 @@ class LiveGameViewModel internal constructor(
                 payload = record.payload,
             ),
         ) ?: return
+        if (record.terminalTick != saved.savedTick || record.terminalHash.isBlank()) return
         val content = saved.descriptor.content()
         val replayEngine = AtcSimulationEngine(content.toSimulationScenario())
         val first = replayEngine.submit(PlayerCommand.Start)
-        replayController = ReplayController(saved, record.terminalTick, 0)
+        replayController = ReplayController(
+            saved = saved,
+            terminalTick = record.terminalTick,
+            expectedScore = record.finalScore,
+            expectedTerminalHash = record.terminalHash,
+            nextEntryIndex = 0,
+        )
         activeDescriptor = saved.descriptor
         activeContent = content
         engine = replayEngine
@@ -1193,7 +1217,7 @@ class LiveGameViewModel internal constructor(
         val controller = replayController ?: return
         var current = engine?.snapshot ?: return
         if (current.tick >= controller.terminalTick || current.status.isTerminal()) {
-            uiState = uiState.copy(replay = uiState.replay?.copy(isPlaying = false, tick = current.tick))
+            finishReplayVerification(current, controller)
             return
         }
         repeat(stepCount.coerceIn(1, 4)) {
@@ -1209,13 +1233,13 @@ class LiveGameViewModel internal constructor(
             current = checkNotNull(engine).advanceFixedSteps(1)
         }
         publish(current)
-        uiState = uiState.copy(
-            replay = uiState.replay?.copy(
-                tick = current.tick,
-                isPlaying = uiState.replay?.isPlaying == true &&
-                    current.tick < controller.terminalTick && !current.status.isTerminal(),
-            ),
-        )
+        if (current.tick >= controller.terminalTick || current.status.isTerminal()) {
+            finishReplayVerification(current, controller)
+        } else {
+            uiState = uiState.copy(
+                replay = uiState.replay?.copy(tick = current.tick),
+            )
+        }
     }
 
     private fun seekReplay(requestedTick: Long) {
@@ -1239,7 +1263,35 @@ class LiveGameViewModel internal constructor(
         lastSnapshot = null
         trails.clear()
         publish(snapshot)
-        uiState = uiState.copy(replay = uiState.replay?.copy(isPlaying = false, tick = snapshot.tick))
+        if (snapshot.tick >= controller.terminalTick || snapshot.status.isTerminal()) {
+            finishReplayVerification(snapshot, controller)
+        } else {
+            uiState = uiState.copy(
+                replay = uiState.replay?.copy(
+                    isPlaying = false,
+                    tick = snapshot.tick,
+                    verification = ReplayVerification.PENDING,
+                ),
+            )
+        }
+    }
+
+    private fun finishReplayVerification(snapshot: GameSnapshot, controller: ReplayController) {
+        val verified = snapshot.tick == controller.terminalTick &&
+            snapshot.status.isTerminal() &&
+            snapshot.score.total == controller.expectedScore &&
+            snapshot.terminalHash() == controller.expectedTerminalHash
+        uiState = uiState.copy(
+            replay = uiState.replay?.copy(
+                isPlaying = false,
+                tick = snapshot.tick,
+                verification = if (verified) {
+                    ReplayVerification.VERIFIED
+                } else {
+                    ReplayVerification.FAILED
+                },
+            ),
+        )
     }
 
     private fun persistPendingProgression() {
@@ -1276,9 +1328,15 @@ class LiveGameViewModel internal constructor(
     }
 
     private fun pauseAndCheckpoint(forcePause: Boolean) {
+        val shouldPause = forcePause || playerData.settings.pauseOnFocusLoss
+        if (replayController != null) {
+            if (shouldPause) {
+                uiState = uiState.copy(replay = uiState.replay?.copy(isPlaying = false))
+            }
+            return
+        }
         val currentEngine = engine ?: return
         val snapshot = lastSnapshot ?: currentEngine.snapshot
-        val shouldPause = forcePause || playerData.settings.pauseOnFocusLoss
         if (shouldPause && snapshot.status == GameStatus.RUNNING) {
             publish(currentEngine.submit(PlayerCommand.Pause))
         }
@@ -1847,6 +1905,8 @@ class LiveGameViewModel internal constructor(
     private data class ReplayController(
         val saved: RestorableSession,
         val terminalTick: Long,
+        val expectedScore: Int,
+        val expectedTerminalHash: String,
         var nextEntryIndex: Int,
     )
 

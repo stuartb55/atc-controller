@@ -159,7 +159,10 @@ data class ReplayUiModel(
     val terminalTick: Long = 0,
     val speed: Int = 1,
     val followedAircraftId: String? = null,
+    val verification: ReplayVerification = ReplayVerification.PENDING,
 )
+
+enum class ReplayVerification { PENDING, VERIFIED, FAILED }
 
 data class CompletedReplayUiModel(
     val id: String,

@@ -8,7 +8,7 @@
         <item quantity="other">%1$d out of 3 stars</item>
     </plurals>
     <string name="cd_terminal_radar">Manchester terminal radar. Select an aircraft, then drag to draw a route or use the route shortcut in its command panel.</string>
-    <string name="cd_aircraft_target">%1$s, heading %2$03d degrees, altitude %3$s feet, speed %4$s knots, %5$s</string>
+    <string name="cd_aircraft_target">%1$s, heading %2$03d°, altitude %3$s feet, speed %4$s knots, %5$s</string>
     <string name="action_direct_to_fix">Direct %1$s</string>
     <string name="action_select_aircraft">Select %1$s</string>
     <string name="route_shortcut">Route shortcut</string>
@@ -221,8 +221,6 @@
     <string name="tutorial_clear_body">Set up the approach, then clear the aircraft to land. Sequence one aircraft at a time and keep the runway clear.</string>
     <string name="tutorial_progress">%1$d / %2$d</string>
     <string name="skip">Skip</string>
-    <string name="take_control">Take control</string>
-    <string name="next">Next</string>
 
     <!-- Authored and engine-generated presentation text. Simulation data stays Android-free. -->
     <string name="mission_01_title">First Contact</string>
@@ -279,16 +277,27 @@
     <string name="failure_time_expired">time expired</string>
     <string name="failure_unknown">shift failed</string>
     <string name="live_operations">Live operations</string>
-    <string name="movements_remaining">%1$d movements remaining</string>
+    <plurals name="movements_remaining">
+        <item quantity="one">%1$d movement remaining</item>
+        <item quantity="other">%1$d movements remaining</item>
+    </plurals>
     <string name="mission_time_remaining">%1$s remaining</string>
-    <string name="secured_stars">%1$d stars secured</string>
-    <string name="points_to_next_star">%1$d points to next star</string>
+    <plurals name="secured_stars">
+        <item quantity="one">%1$d star secured</item>
+        <item quantity="other">%1$d stars secured</item>
+    </plurals>
+    <plurals name="points_to_next_star">
+        <item quantity="one">%1$d point to next star</item>
+        <item quantity="other">%1$d points to next star</item>
+    </plurals>
     <string name="maximum_stars_secured">Maximum stars secured</string>
     <string name="upcoming_traffic">Next traffic</string>
     <string name="traffic_due">%1$s · %2$s · %3$ds</string>
     <string name="no_more_scheduled_traffic">No more scheduled traffic</string>
     <string name="flight_strips">Flight strips</string>
     <string name="event_feed">Radio / event feed</string>
+    <string name="show_event_history">Show history</string>
+    <string name="show_latest_events">Show latest</string>
     <string name="direct_to">Direct %1$s</string>
     <string name="append_fix">Append %1$s</string>
     <string name="undo_waypoint">Undo waypoint</string>
@@ -310,4 +319,6 @@
     <string name="replay_seek_start">Replay start</string>
     <string name="replay_seek_end">Replay end</string>
     <string name="replay_progress">Replay %1$d / %2$d</string>
+    <string name="replay_verified">Verified</string>
+    <string name="replay_verification_failed">Replay mismatch</string>
 </resources>

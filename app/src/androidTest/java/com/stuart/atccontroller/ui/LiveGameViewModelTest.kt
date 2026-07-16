@@ -7,10 +7,12 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.stuart.atccontroller.data.ActiveSessionRecord
+import com.stuart.atccontroller.data.CompletedReplayRecord
 import com.stuart.atccontroller.data.ManchesterContent
 import com.stuart.atccontroller.data.PlayerData
 import com.stuart.atccontroller.data.PlayerProgress
 import com.stuart.atccontroller.data.PlayerSettings
+import com.stuart.atccontroller.data.TrainingState
 import com.stuart.atccontroller.data.unlockedAfterMissionCompletion
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -215,6 +217,74 @@ class LiveGameViewModelTest {
         assertEquals(setOf(ManchesterContent.FIRST_MISSION_ID), persistence.data.value.progress.unlockedMissionIds)
     }
 
+    @Test
+    fun tutorialRestoreAndUpdatesPreserveCompletedLessons() {
+        val selectionLesson = "SELECTION_AND_ROUTING"
+        val persistence = FakeGamePersistence(
+            PlayerData(
+                trainingState = TrainingState(
+                    activeLessonId = selectionLesson,
+                    activeStep = 2,
+                    completedLessonIds = setOf("ALTITUDE"),
+                ),
+            ),
+        )
+        val viewModel = createViewModel(SavedStateHandle(), persistence)
+        waitUntil { viewModel.uiState.settingsLoaded }
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.StartSelectedMission)
+        }
+        assertEquals(2, viewModel.uiState.tutorialStep)
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.AdvanceTutorial)
+        }
+        waitUntil { persistence.data.value.trainingState.activeStep == 3 }
+        assertEquals(
+            setOf("ALTITUDE"),
+            persistence.data.value.trainingState.completedLessonIds,
+        )
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.DismissTutorial)
+        }
+        waitUntil { selectionLesson in persistence.data.value.trainingState.completedLessonIds }
+        assertEquals(
+            setOf("ALTITUDE", selectionLesson),
+            persistence.data.value.trainingState.completedLessonIds,
+        )
+    }
+
+    @Test
+    fun backgroundingAReplayStopsPlaybackWithoutPausingTheReplayEngine() {
+        val scenarioId = ManchesterContent.FIRST_MISSION_ID
+        val replay = CompletedReplayRecord(
+            schemaVersion = 2,
+            id = "replay-1",
+            scenarioId = scenarioId,
+            savedAtEpochMillis = 1L,
+            terminalTick = 0L,
+            finalScore = 0,
+            terminalHash = "intentionally-invalid",
+            payload = "replay-v2\nD|A|$scenarioId\nS|0|1.0|true|",
+        )
+        val viewModel = createViewModel(
+            SavedStateHandle(),
+            FakeGamePersistence(PlayerData(completedReplays = listOf(replay))),
+        )
+        waitUntil { viewModel.uiState.settingsLoaded }
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.StartReplay(replay.id))
+            viewModel.onAction(GameAction.ReplayTogglePlay)
+            viewModel.onHostStopped()
+        }
+
+        assertFalse(viewModel.uiState.replay!!.isPlaying)
+        assertFalse(viewModel.uiState.isPaused)
+    }
+
     private fun createViewModel(
         savedStateHandle: SavedStateHandle,
         persistence: GamePersistence,
@@ -287,5 +357,13 @@ private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     override suspend fun clearActiveSession() {
         savedSession.set(null)
         data.value = data.value.copy(activeSession = null)
+    }
+
+    override suspend fun saveTrainingState(state: TrainingState) {
+        data.value = data.value.copy(trainingState = state)
+    }
+
+    override suspend fun saveCompletedReplay(replay: CompletedReplayRecord) {
+        data.value = data.value.copy(completedReplays = listOf(replay) + data.value.completedReplays)
     }
 }

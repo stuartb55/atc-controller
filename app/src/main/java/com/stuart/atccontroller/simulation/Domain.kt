@@ -592,6 +592,8 @@ data class GameSnapshot(
     /** Events produced by the most recent engine operation. */
     val events: List<GameEvent>,
     val eventHistory: List<GameEvent> = events,
+    /** Stable sequence number of the first retained event, even after bounded-history eviction. */
+    val eventHistoryStartSequence: Long = 0L,
     val upcomingAircraft: List<UpcomingAircraft> = emptyList(),
     val objectives: ScenarioObjectives = ScenarioObjectives(),
     val maxDurationSeconds: Double = 0.0,
