@@ -68,6 +68,13 @@ data class WeatherDefinition(
     val visibilityKm: Int,
 )
 
+data class MechanicVersionDefinition(
+    val runwayProcedures: Int = 0,
+    val wakeTurbulence: Int = 0,
+    val windDrift: Int = 0,
+    val reducedVisibility: Int = 0,
+)
+
 enum class TrafficIntent {
     ARRIVAL,
     DEPARTURE,
@@ -129,6 +136,8 @@ data class ScoringDefinition(
     val avoidableGoAroundPenalty: Int = 200,
     val manualGoAroundPenalty: Int = 50,
     val missedExitPenalty: Int = 250,
+    val runwayProcedurePenalty: Int = 250,
+    val wakeViolationPenalty: Int = 300,
     val thresholds: StarThresholds,
 )
 
@@ -160,4 +169,5 @@ data class ScenarioDefinition(
     val scoring: ScoringDefinition,
     val tutorialFocus: TutorialFocus = TutorialFocus.NONE,
     val isEndless: Boolean = false,
+    val mechanicVersions: MechanicVersionDefinition = MechanicVersionDefinition(),
 )

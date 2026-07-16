@@ -11,6 +11,7 @@ import com.stuart.atccontroller.data.ManchesterContent
 import com.stuart.atccontroller.data.PlayerData
 import com.stuart.atccontroller.data.PlayerProgress
 import com.stuart.atccontroller.data.PlayerSettings
+import com.stuart.atccontroller.data.unlockedAfterMissionCompletion
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -185,6 +186,35 @@ class LiveGameViewModelTest {
         assertEquals(AppScreen.SETTINGS, recreated.uiState.screen)
     }
 
+    @Test
+    fun abandoningRequiresConfirmationAndNeverRecordsProgress() {
+        val persistence = FakeGamePersistence(
+            PlayerData(progress = PlayerProgress(tutorialCompleted = true)),
+        )
+        val viewModel = createViewModel(SavedStateHandle(), persistence)
+        waitUntil { viewModel.uiState.settingsLoaded }
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.StartSelectedMission)
+            viewModel.onAction(GameAction.RequestAbandonment)
+        }
+        assertTrue(viewModel.uiState.abandonConfirmationVisible)
+        assertEquals(AppScreen.GAME, viewModel.uiState.screen)
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.CancelAbandonment)
+            viewModel.onAction(GameAction.RequestAbandonment)
+            viewModel.onAction(GameAction.ConfirmAbandonment)
+        }
+        waitUntil { persistence.data.value.activeSession == null }
+
+        assertEquals(AppScreen.RESULTS, viewModel.uiState.screen)
+        assertFalse(viewModel.uiState.result!!.successful)
+        assertEquals(0, viewModel.uiState.result!!.stars)
+        assertEquals(0, persistence.recordedMissionResults)
+        assertEquals(setOf(ManchesterContent.FIRST_MISSION_ID), persistence.data.value.progress.unlockedMissionIds)
+    }
+
     private fun createViewModel(
         savedStateHandle: SavedStateHandle,
         persistence: GamePersistence,
@@ -213,6 +243,7 @@ class LiveGameViewModelTest {
 private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     val data = MutableStateFlow(initial)
     val savedSession = AtomicReference<ActiveSessionRecord?>()
+    var recordedMissionResults = 0
     override val playerData = data.asStateFlow()
 
     override suspend fun updateSettings(transform: (PlayerSettings) -> PlayerSettings) {
@@ -226,12 +257,18 @@ private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     }
 
     override suspend fun recordMissionResult(missionId: String, stars: Int, score: Int) {
+        recordedMissionResults += 1
+        val unlocked = unlockedAfterMissionCompletion(
+            data.value.progress.unlockedMissionIds,
+            missionId,
+        )
         data.value = data.value.copy(
             progress = data.value.progress.copy(
                 missionStars = data.value.progress.missionStars +
                     (missionId to maxOf(data.value.progress.missionStars[missionId] ?: 0, stars)),
                 missionBestScores = data.value.progress.missionBestScores +
                     (missionId to maxOf(data.value.progress.missionBestScores[missionId] ?: 0, score)),
+                unlockedMissionIds = unlocked,
             ),
         )
     }

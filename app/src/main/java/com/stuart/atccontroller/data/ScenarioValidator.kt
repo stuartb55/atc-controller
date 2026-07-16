@@ -176,6 +176,14 @@ object ScenarioValidator {
         }
 
         val scoring = scenario.scoring
+        with(scenario.mechanicVersions) {
+            if (listOf(runwayProcedures, wakeTurbulence, windDrift, reducedVisibility).any { it < 0 }) {
+                issue("invalid_mechanic_version", "scenario.mechanicVersions", "versions must not be negative")
+            }
+            if (wakeTurbulence !in 0..1) {
+                issue("unknown_wake_version", "scenario.mechanicVersions.wakeTurbulence", "only version 1 is supported")
+            }
+        }
         val scoringValues = listOf(
             scoring.safeArrivalPoints,
             scoring.safeDeparturePoints,
@@ -186,6 +194,8 @@ object ScenarioValidator {
             scoring.avoidableGoAroundPenalty,
             scoring.manualGoAroundPenalty,
             scoring.missedExitPenalty,
+            scoring.runwayProcedurePenalty,
+            scoring.wakeViolationPenalty,
         )
         if (scoringValues.any { it < 0 }) {
             issue("negative_scoring_value", "scenario.scoring", "point and penalty values must not be negative")

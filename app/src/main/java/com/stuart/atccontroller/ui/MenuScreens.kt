@@ -1061,6 +1061,7 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                 item {
                     ResultsPerformancePanel(
                         result = result,
+                        state = state,
                         onAction = onAction,
                         compact = true,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 360.dp),
@@ -1097,6 +1098,7 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
             }
             ResultsPerformancePanel(
                 result = result,
+                state = state,
                 onAction = onAction,
                 compact = compact,
                 modifier = Modifier.weight(1.1f).fillMaxHeight(),
@@ -1108,6 +1110,7 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
 @Composable
 private fun ResultsPerformancePanel(
     result: MissionResultUiModel,
+    state: GameUiState,
     onAction: (GameAction) -> Unit,
     compact: Boolean,
     modifier: Modifier = Modifier,
@@ -1122,14 +1125,75 @@ private fun ResultsPerformancePanel(
         Column(Modifier.padding(if (compact) 18.dp else 26.dp)) {
             SectionLabel(stringResource(R.string.performance_breakdown))
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))
-            ResultLine(stringResource(R.string.safe_arrivals), localizedInteger(result.safeArrivals), positive = true)
-            ResultLine(stringResource(R.string.safe_departures), localizedInteger(result.safeDepartures), positive = true)
-            ResultLine(stringResource(R.string.efficiency_bonus), "+${localizedInteger(result.efficiencyBonus)}", positive = true)
-            ResultLine(stringResource(R.string.separation_penalty), "−${localizedInteger(result.separationPenalty)}", positive = result.separationPenalty == 0)
+            if (result.scoreRows.isNotEmpty()) {
+                result.scoreRows.forEach { row ->
+                    ResultLine(
+                        row.label,
+                        when {
+                            row.points > 0 -> "+${localizedInteger(row.points)}"
+                            row.points < 0 -> "−${localizedInteger(-row.points)}"
+                            else -> "0"
+                        },
+                        positive = row.points >= 0,
+                    )
+                }
+                result.pointsToNextStar?.let { points ->
+                    Text(
+                        stringResource(R.string.points_to_next_star, points),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.amber,
+                    )
+                }
+            } else {
+                ResultLine(stringResource(R.string.safe_arrivals), localizedInteger(result.safeArrivals), positive = true)
+                ResultLine(stringResource(R.string.safe_departures), localizedInteger(result.safeDepartures), positive = true)
+                ResultLine(stringResource(R.string.efficiency_bonus), "+${localizedInteger(result.efficiencyBonus)}", positive = true)
+                ResultLine(stringResource(R.string.separation_penalty), "−${localizedInteger(result.separationPenalty)}", positive = result.separationPenalty == 0)
+            }
+            when (state.progressionSaveStatus) {
+                ProgressionSaveStatus.SAVING -> Text(
+                    stringResource(R.string.progress_saving),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted,
+                )
+                ProgressionSaveStatus.FAILED -> {
+                    Text(
+                        stringResource(R.string.progress_save_failed),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.amber,
+                    )
+                    TextButton(onClick = { onAction(GameAction.RetryProgressionPersistence) }) {
+                        Text(stringResource(R.string.retry_save).uppercase())
+                    }
+                }
+                ProgressionSaveStatus.NOT_REQUIRED, ProgressionSaveStatus.SAVED -> Unit
+            }
+            (state.completedReplays.firstOrNull { it.scenarioId == state.selectedMissionId }
+                ?: state.completedReplays.firstOrNull())?.let { replay ->
+                Spacer(Modifier.height(8.dp))
+                SecondaryActionButton(
+                    stringResource(R.string.review_replay),
+                    { onAction(GameAction.StartReplay(replay.id)) },
+                    Modifier.fillMaxWidth(),
+                )
+            }
             Spacer(Modifier.weight(1f))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SecondaryActionButton(stringResource(R.string.restart), { onAction(GameAction.RestartMission) }, Modifier.weight(.8f))
-                PrimaryActionButton(stringResource(R.string.next_shift), { onAction(GameAction.Navigate(AppScreen.MISSIONS)) }, Modifier.weight(1.2f))
+                if (result.successful) {
+                    PrimaryActionButton(
+                        stringResource(R.string.next_mission),
+                        { onAction(GameAction.OpenNextMission) },
+                        Modifier.weight(1.2f),
+                        enabled = state.progressionSaveStatus == ProgressionSaveStatus.SAVED,
+                    )
+                } else {
+                    PrimaryActionButton(
+                        stringResource(R.string.next_shift),
+                        { onAction(GameAction.Navigate(AppScreen.MISSIONS)) },
+                        Modifier.weight(1.2f),
+                    )
+                }
             }
             Spacer(Modifier.height(8.dp))
             TextButton(

@@ -33,6 +33,22 @@ data class GameUiState(
     val sessionPersistenceFailed: Boolean = false,
     val result: MissionResultUiModel? = null,
     val canContinue: Boolean = false,
+    val progressionSaveStatus: ProgressionSaveStatus = ProgressionSaveStatus.NOT_REQUIRED,
+    val nextMissionId: String? = null,
+    val abandonConfirmationVisible: Boolean = false,
+    val objectiveProgress: List<ObjectiveProgressUiModel> = emptyList(),
+    val movementsRemaining: Int = 0,
+    val missionTimeRemainingSeconds: Int = 0,
+    val missionOverdue: Boolean = false,
+    val upcomingTraffic: List<UpcomingTrafficUiModel> = emptyList(),
+    val eventFeed: List<EventFeedEntryUiModel> = emptyList(),
+    val flightStrips: List<FlightStripUiModel> = emptyList(),
+    val starForecast: StarForecastUiModel = StarForecastUiModel(),
+    val weatherImpact: WeatherImpactUiModel = WeatherImpactUiModel(),
+    val training: TrainingUiModel? = null,
+    val replay: ReplayUiModel? = null,
+    val completedReplays: List<CompletedReplayUiModel> = emptyList(),
+    val runwayProceduresEnabled: Boolean = false,
 ) {
     val selectedAircraft: AircraftUiModel?
         get() = aircraft.firstOrNull { it.id == selectedAircraftId }
@@ -75,6 +91,82 @@ data class AircraftUiModel(
 )
 
 enum class ConflictLevel { NONE, PREDICTED, LOSS }
+
+data class ObjectiveProgressUiModel(
+    val id: String,
+    val label: String,
+    val current: Int,
+    val target: Int,
+    val passed: Boolean,
+)
+
+data class UpcomingTrafficUiModel(
+    val aircraftId: String,
+    val callsign: String,
+    val intent: String,
+    val runwayId: String?,
+    val secondsToEntry: Int,
+)
+
+enum class EventFeedSeverity { ROUTINE, SUCCESS, WARNING, CRITICAL }
+
+data class EventFeedEntryUiModel(
+    val sequence: Long,
+    val elapsedSeconds: Int,
+    val caption: String,
+    val aircraftIds: List<String> = emptyList(),
+    val severity: EventFeedSeverity = EventFeedSeverity.ROUTINE,
+    val rejectionCode: String? = null,
+)
+
+data class FlightStripUiModel(
+    val aircraftId: String,
+    val callsign: String,
+    val phase: FlightPhase,
+    val runwayId: String?,
+    val fuelPercent: Int,
+    val conflictLevel: ConflictLevel,
+    val clearance: String,
+    val wakeRequiredSeconds: Int? = null,
+    val wakeActualSeconds: Int? = null,
+)
+
+data class StarForecastUiModel(
+    val securedStars: Int = 0,
+    val pointsToNextStar: Int? = null,
+)
+
+data class WeatherImpactUiModel(
+    val wind: String = "—",
+    val visibility: String = "—",
+    val crosswindByRunway: Map<String, Int> = emptyMap(),
+    val windDriftActive: Boolean = false,
+    val reducedVisibilityActive: Boolean = false,
+)
+
+data class TrainingUiModel(
+    val lessonId: String,
+    val stepIndex: Int,
+    val stepCount: Int,
+    val prompt: String,
+    val actionGate: String,
+    val canAdvance: Boolean,
+)
+
+data class ReplayUiModel(
+    val isPlaying: Boolean = false,
+    val tick: Long = 0,
+    val terminalTick: Long = 0,
+    val speed: Int = 1,
+    val followedAircraftId: String? = null,
+)
+
+data class CompletedReplayUiModel(
+    val id: String,
+    val scenarioId: String,
+    val score: Int,
+    val terminalTick: Long,
+)
 
 data class ConflictUiModel(
     val firstAircraftId: String,
@@ -166,6 +258,14 @@ data class MissionResultUiModel(
     val separationPenalty: Int,
     val personalBest: Boolean,
     val successful: Boolean = true,
+    val scoreRows: List<ScoreRowUiModel> = emptyList(),
+    val pointsToNextStar: Int? = null,
+)
+
+data class ScoreRowUiModel(
+    val id: String,
+    val label: String,
+    val points: Int,
 )
 
 sealed interface GameAction {
@@ -174,17 +274,36 @@ sealed interface GameAction {
     data object StartSelectedMission : GameAction
     data object ContinueLastGame : GameAction
     data class SelectAircraft(val id: String?) : GameAction
-    data class CommitRoute(val points: List<NormalizedPoint>) : GameAction
+    data class CommitRoute(
+        val points: List<NormalizedPoint>,
+        val terminalTarget: RouteTerminalTarget? = null,
+    ) : GameAction
+    data class DirectToFix(val name: String) : GameAction
+    data class AppendFix(val name: String) : GameAction
+    data object UndoWaypoint : GameAction
+    data object ClearRoute : GameAction
+    data class SelectEvent(val sequence: Long, val aircraftId: String? = null) : GameAction
+    data class SelectFlightStrip(val aircraftId: String) : GameAction
     data class SetTargetAltitude(val feet: Int) : GameAction
     data class SetTargetSpeed(val knots: Int) : GameAction
     /** Builds a stable final route and selects safe landing altitude/speed targets. */
     data object PrepareApproach : GameAction
     data class IssueClearance(val type: ClearanceType) : GameAction
+    data class AssignRunway(val runwayId: String) : GameAction
+    data class AssignApproach(val runwayId: String) : GameAction
+    data object CancelApproach : GameAction
+    data object LineUpAndWait : GameAction
+    data object CancelLandingClearance : GameAction
+    data object CancelTakeoffClearance : GameAction
     data object TogglePause : GameAction
     data class SetTimeScale(val multiplier: Int) : GameAction
     data object AdvanceTutorial : GameAction
     data object DismissTutorial : GameAction
-    data object CompleteMission : GameAction
+    data object RequestAbandonment : GameAction
+    data object ConfirmAbandonment : GameAction
+    data object CancelAbandonment : GameAction
+    data object RetryProgressionPersistence : GameAction
+    data object OpenNextMission : GameAction
     data object RestartMission : GameAction
     data class SetMusicVolume(val volume: Float) : GameAction
     data class SetEffectsVolume(val volume: Float) : GameAction
@@ -198,6 +317,14 @@ sealed interface GameAction {
     data object TogglePauseOnFocusLoss : GameAction
     data class SetLabelScale(val scale: Float) : GameAction
     data class CycleConflict(val offset: Int) : GameAction
+    data object ReplayTogglePlay : GameAction
+    data class StartReplay(val replayId: String) : GameAction
+    data object ReplayStep : GameAction
+    data class ReplaySetSpeed(val multiplier: Int) : GameAction
+    data class ReplaySeek(val tick: Long) : GameAction
+    data class ReplayFollowAircraft(val aircraftId: String?) : GameAction
 }
+
+enum class ProgressionSaveStatus { NOT_REQUIRED, SAVING, SAVED, FAILED }
 
 enum class ClearanceType { TAKE_OFF, LAND, GO_AROUND }

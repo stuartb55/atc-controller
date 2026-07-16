@@ -10,6 +10,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.stuart.atccontroller.R
 import com.stuart.atccontroller.data.ActiveSessionRecord
+import com.stuart.atccontroller.data.CompletedReplayRecord
 import com.stuart.atccontroller.data.EndlessScenarioGenerator
 import com.stuart.atccontroller.data.FixUse
 import com.stuart.atccontroller.data.ManchesterContent
@@ -19,6 +20,7 @@ import com.stuart.atccontroller.data.PlayerProgress
 import com.stuart.atccontroller.data.PlayerSettings
 import com.stuart.atccontroller.data.ScenarioDefinition as ContentScenarioDefinition
 import com.stuart.atccontroller.data.TrafficSpawnDefinition
+import com.stuart.atccontroller.data.TrainingState
 import com.stuart.atccontroller.data.TutorialFocus
 import com.stuart.atccontroller.data.atcControllerDataStore
 import com.stuart.atccontroller.data.toSimulationScenario
@@ -38,9 +40,12 @@ import com.stuart.atccontroller.simulation.PlayerCommand
 import com.stuart.atccontroller.simulation.Route
 import com.stuart.atccontroller.simulation.Vec2
 import java.text.NumberFormat
+import java.security.MessageDigest
 import java.util.Locale
 import kotlin.math.ceil
+import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,6 +76,9 @@ internal interface GamePersistence {
     suspend fun recordEndlessHighScore(score: Int)
     suspend fun saveActiveSession(session: ActiveSessionRecord)
     suspend fun clearActiveSession()
+    suspend fun saveTrainingState(state: TrainingState) = Unit
+    suspend fun saveCompletedReplay(replay: CompletedReplayRecord) = Unit
+    suspend fun reconcileUnlocks() = Unit
 }
 
 private class PreferencesGamePersistence(
@@ -93,6 +101,10 @@ private class PreferencesGamePersistence(
         repository.saveActiveSession(session)
 
     override suspend fun clearActiveSession() = repository.clearActiveSession()
+    override suspend fun saveTrainingState(state: TrainingState) = repository.saveTrainingState(state)
+    override suspend fun saveCompletedReplay(replay: CompletedReplayRecord) =
+        repository.saveCompletedReplay(replay)
+    override suspend fun reconcileUnlocks() = repository.reconcileUnlocks()
 }
 
 /**
@@ -125,6 +137,8 @@ class LiveGameViewModel internal constructor(
     private val restoredResult = resultFromSavedState()
     private val restoredTutorialState = savedStateHandle.get<Int>(STATE_TUTORIAL_STEP)
     private var restorePersistedSessionOnLoad = restoredScreen == AppScreen.GAME
+    private var resumePendingProgressionOnLoad = restoredScreen == AppScreen.RESULTS &&
+        restoredResult?.successful == true
 
     private var playerData = PlayerData()
     private var engine: AtcSimulationEngine? = null
@@ -133,6 +147,7 @@ class LiveGameViewModel internal constructor(
     private var lastSnapshot: GameSnapshot? = null
     private var suppressPersistedSession = false
     private var pausedForTutorial = false
+    private var pausedForAbandonConfirmation = false
     private var lastCheckpointTick = -1L
     private var checkpointingDisabled = false
     private var restoreJob: Job? = null
@@ -143,8 +158,10 @@ class LiveGameViewModel internal constructor(
     private var feedbackSequence = 0L
     private var conflictAnnouncementSequence = 0L
     private var lastConflictAnnouncementKey: String? = null
+    private var pendingProgression: PendingProgression? = null
     private val trails = mutableMapOf<String, MutableList<NormalizedPoint>>()
     private val replayLog = mutableListOf<ReplayEntry>()
+    private var replayController: ReplayController? = null
 
     var uiState by mutableStateOf(
         initialUiState(resources).copy(
@@ -155,6 +172,10 @@ class LiveGameViewModel internal constructor(
             selectedMissionId = savedStateHandle.get<String>(STATE_SELECTED_MISSION)
                 ?: ManchesterContent.FIRST_MISSION_ID,
             result = restoredResult,
+            progressionSaveStatus = savedStateHandle.get<String>(STATE_PROGRESSION_STATUS)
+                ?.let { runCatching { ProgressionSaveStatus.valueOf(it) }.getOrNull() }
+                ?: ProgressionSaveStatus.NOT_REQUIRED,
+            nextMissionId = savedStateHandle.get<String>(STATE_NEXT_MISSION),
             tutorialStep = restoredTutorialState?.takeIf { it in 0..LAST_TUTORIAL_STEP },
             isRestoring = restorePersistedSessionOnLoad,
         ),
@@ -165,12 +186,19 @@ class LiveGameViewModel internal constructor(
         private set
 
     init {
+        viewModelScope.launch { preferences.reconcileUnlocks() }
         viewModelScope.launch {
             preferences.playerData.collectLatest(::applyPlayerData)
         }
         viewModelScope.launch {
             while (isActive) {
                 delay(TICK_MILLIS)
+                if (replayController != null) {
+                    if (uiState.replay?.isPlaying == true) {
+                        advanceReplay(uiState.replay?.speed ?: 1)
+                    }
+                    continue
+                }
                 val runningEngine = engine ?: continue
                 if (uiState.screen != AppScreen.GAME) continue
                 if (runningEngine.snapshot.status == GameStatus.RUNNING) {
@@ -181,13 +209,25 @@ class LiveGameViewModel internal constructor(
     }
 
     fun onAction(action: GameAction) {
+        if (replayController != null && action !is GameAction.Navigate &&
+            action !is GameAction.SelectAircraft && action !is GameAction.ReplayTogglePlay &&
+            action !is GameAction.ReplayStep && action !is GameAction.ReplaySetSpeed &&
+            action !is GameAction.ReplaySeek && action !is GameAction.ReplayFollowAircraft
+        ) return
         when (action) {
             is GameAction.Navigate -> navigate(action.screen)
             is GameAction.SelectMission -> selectMission(action.id)
             GameAction.StartSelectedMission -> startSelectedMission()
             GameAction.ContinueLastGame -> continueLastGame()
             is GameAction.SelectAircraft -> selectAircraft(action.id)
-            is GameAction.CommitRoute -> submitRoute(action.points)
+            is GameAction.CommitRoute -> submitRoute(action.points, action.terminalTarget)
+            is GameAction.DirectToFix -> routeToFix(action.name, append = false)
+            is GameAction.AppendFix -> routeToFix(action.name, append = true)
+            GameAction.UndoWaypoint -> submitForSelected { PlayerCommand.UndoWaypoint(it.id) }
+            GameAction.ClearRoute -> submitForSelected { PlayerCommand.ClearRoute(it.id) }
+            is GameAction.SelectEvent -> selectAircraft(action.aircraftId ?: uiState.eventFeed
+                .firstOrNull { it.sequence == action.sequence }?.aircraftIds?.firstOrNull())
+            is GameAction.SelectFlightStrip -> selectAircraft(action.aircraftId)
             is GameAction.SetTargetAltitude -> submitForSelected { aircraft ->
                 PlayerCommand.SetTargetAltitude(
                     aircraftId = aircraft.id,
@@ -202,6 +242,25 @@ class LiveGameViewModel internal constructor(
             }
             GameAction.PrepareApproach -> prepareApproach()
             is GameAction.IssueClearance -> issueClearance(action.type)
+            is GameAction.AssignRunway -> submitForSelected {
+                PlayerCommand.AssignRunway(it.id, action.runwayId)
+            }
+            is GameAction.AssignApproach -> submitForSelected {
+                PlayerCommand.AssignApproach(it.id, action.runwayId)
+            }
+            GameAction.CancelApproach -> submitForSelected { PlayerCommand.CancelApproach(it.id) }
+            GameAction.LineUpAndWait -> submitForSelected { aircraft ->
+                PlayerCommand.LineUpAndWait(
+                    aircraft.id,
+                    aircraft.runwayId ?: lastSnapshot?.runways?.firstOrNull()?.id.orEmpty(),
+                )
+            }
+            GameAction.CancelLandingClearance -> submitForSelected {
+                PlayerCommand.CancelLandingClearance(it.id)
+            }
+            GameAction.CancelTakeoffClearance -> submitForSelected {
+                PlayerCommand.CancelTakeoffClearance(it.id)
+            }
             GameAction.TogglePause -> togglePause()
             is GameAction.SetTimeScale -> {
                 submit(PlayerCommand.SetSimulationSpeed(action.multiplier.coerceIn(1, 2).toDouble()))
@@ -209,7 +268,11 @@ class LiveGameViewModel internal constructor(
             }
             GameAction.AdvanceTutorial -> advanceTutorial()
             GameAction.DismissTutorial -> finishTutorial()
-            GameAction.CompleteMission -> showInterimDebrief()
+            GameAction.RequestAbandonment -> requestAbandonment()
+            GameAction.ConfirmAbandonment -> confirmAbandonment()
+            GameAction.CancelAbandonment -> cancelAbandonment()
+            GameAction.RetryProgressionPersistence -> persistPendingProgression()
+            GameAction.OpenNextMission -> openNextMission()
             GameAction.RestartMission -> activeDescriptor?.let(::startScenario)
             is GameAction.SetMusicVolume -> updateSettings { settings ->
                 val volume = action.volume.finiteOrZero().coerceIn(0f, 1f)
@@ -253,6 +316,21 @@ class LiveGameViewModel internal constructor(
                 it.copy(labelScale = action.scale.coerceIn(0.8f, 1.4f))
             }
             is GameAction.CycleConflict -> cycleConflict(action.offset)
+            is GameAction.StartReplay -> startReplay(action.replayId)
+            GameAction.ReplayTogglePlay -> uiState = uiState.copy(
+                replay = uiState.replay?.copy(isPlaying = uiState.replay?.isPlaying != true),
+            )
+            GameAction.ReplayStep -> advanceReplay(1)
+            is GameAction.ReplaySetSpeed -> uiState = uiState.copy(
+                replay = uiState.replay?.copy(speed = action.multiplier.coerceIn(1, 4)),
+            )
+            is GameAction.ReplaySeek -> seekReplay(action.tick)
+            is GameAction.ReplayFollowAircraft -> {
+                selectAircraft(action.aircraftId)
+                uiState = uiState.copy(
+                    replay = uiState.replay?.copy(followedAircraftId = action.aircraftId),
+                )
+            }
         }
     }
 
@@ -310,6 +388,14 @@ class LiveGameViewModel internal constructor(
     }
 
     private fun navigate(screen: AppScreen) {
+        if (replayController != null && screen != AppScreen.GAME) {
+            replayController = null
+            engine = null
+            lastSnapshot = null
+            activeDescriptor = null
+            activeContent = null
+            uiState = uiState.copy(replay = null)
+        }
         if (uiState.isRestoring && screen != AppScreen.GAME) {
             restoreJob?.cancel()
             restoreJob = null
@@ -393,6 +479,9 @@ class LiveGameViewModel internal constructor(
             canContinue = true,
             isRestoring = false,
             sessionPersistenceFailed = false,
+            progressionSaveStatus = ProgressionSaveStatus.NOT_REQUIRED,
+            nextMissionId = null,
+            abandonConfirmationVisible = false,
         )
         var firstSnapshot = newEngine.submit(PlayerCommand.Start)
         if (showTutorial) firstSnapshot = newEngine.submit(PlayerCommand.Pause)
@@ -551,17 +640,48 @@ class LiveGameViewModel internal constructor(
         uiState = uiState.copy(selectedAircraftId = validId)
         persistUiState()
         checkpoint()
+        if (validId != null && uiState.tutorialStep == 0) advanceTutorial()
     }
 
-    private fun submitRoute(points: List<NormalizedPoint>) {
+    private fun submitRoute(points: List<NormalizedPoint>, terminalTarget: RouteTerminalTarget?) {
         val id = uiState.selectedAircraftId ?: return
-        val waypoints = points.asSequence()
+        val aircraft = lastSnapshot?.aircraft?.firstOrNull { it.id == id } ?: return
+        val routedPoints = when (terminalTarget) {
+            is RouteTerminalTarget.AssignedRunway -> {
+                if (!routeTerminalIsAllowed(
+                        terminalTarget,
+                        aircraft.runwayId,
+                        aircraft.operation == FlightOperation.ARRIVAL,
+                    )) {
+                    return
+                }
+                val final = ManchesterContent.finalApproachPoints(terminalTarget.runwayId).map {
+                    NormalizedPoint(it.x.toFloat(), it.y.toFloat())
+                }
+                composeApproachRoute(points, final)
+            }
+            is RouteTerminalTarget.NavigationFix -> {
+                val fix = uiState.fixes.firstOrNull { it.name == terminalTarget.name } ?: return
+                points.dropLastWhile { it == fix.position } + fix.position
+            }
+            null -> points
+        }
+        val waypoints = routedPoints.asSequence()
             .filter { it.x.isFinite() && it.y.isFinite() }
             .map(NormalizedPoint::clamped)
             .map { Vec2(it.x.toDouble(), it.y.toDouble()) }
             .take(MAX_ROUTE_POINTS)
             .toList()
         submit(PlayerCommand.SetRoute(id, Route(waypoints)))
+    }
+
+    private fun routeToFix(name: String, append: Boolean) {
+        val fix = uiState.fixes.firstOrNull { it.name == name } ?: return
+        submitForSelected { aircraft ->
+            val point = Vec2(fix.position.x.toDouble(), fix.position.y.toDouble())
+            if (append) PlayerCommand.AppendWaypoint(aircraft.id, point)
+            else PlayerCommand.DirectTo(aircraft.id, point)
+        }
     }
 
     private inline fun submitForSelected(command: (AircraftState) -> PlayerCommand) {
@@ -622,6 +742,11 @@ class LiveGameViewModel internal constructor(
         } else {
             uiState = uiState.copy(tutorialStep = current + 1)
             persistUiState()
+            viewModelScope.launch {
+                preferences.saveTrainingState(
+                    TrainingState(activeLessonId = activeContent?.tutorialFocus?.name, activeStep = current + 1),
+                )
+            }
         }
     }
 
@@ -636,10 +761,37 @@ class LiveGameViewModel internal constructor(
         }
         persistUiState()
         viewModelScope.launch { preferences.setTutorialCompleted() }
+        viewModelScope.launch {
+            val lesson = activeContent?.tutorialFocus?.name
+            preferences.saveTrainingState(
+                TrainingState(
+                    completedLessonIds = playerData.trainingState.completedLessonIds + listOfNotNull(lesson),
+                ),
+            )
+        }
     }
 
-    /** Opens an unrecorded interim debrief; only an engine terminal event awards progress. */
-    private fun showInterimDebrief() {
+    private fun requestAbandonment() {
+        if (lastSnapshot?.status?.isActive() != true) return
+        pausedForAbandonConfirmation = lastSnapshot?.status == GameStatus.RUNNING
+        if (pausedForAbandonConfirmation) {
+            engine?.submit(PlayerCommand.Pause)?.let(::publish)
+        }
+        uiState = uiState.copy(abandonConfirmationVisible = true)
+    }
+
+    private fun cancelAbandonment() {
+        uiState = uiState.copy(abandonConfirmationVisible = false)
+        if (pausedForAbandonConfirmation && lastSnapshot?.status == GameStatus.PAUSED) {
+            engine?.submit(PlayerCommand.Resume)?.let(::publish)
+        }
+        pausedForAbandonConfirmation = false
+    }
+
+    /** Ends the attempt without recording a result or unlocking any mission. */
+    private fun confirmAbandonment() {
+        if (!uiState.abandonConfirmationVisible) return
+        pausedForAbandonConfirmation = false
         val snapshot = lastSnapshot ?: return
         val paused = if (snapshot.status == GameStatus.RUNNING) {
             engine?.submit(PlayerCommand.Pause) ?: snapshot
@@ -662,10 +814,21 @@ class LiveGameViewModel internal constructor(
                     ?.plus(paused.score.total)
                     ?: paused.score.total,
             ),
-            canContinue = true,
+            canContinue = false,
+            abandonConfirmationVisible = false,
+            progressionSaveStatus = ProgressionSaveStatus.NOT_REQUIRED,
+            nextMissionId = null,
         )
         persistUiState()
-        checkpoint()
+        suppressPersistedSession = true
+        checkpointingDisabled = true
+        checkpointJob?.cancel()
+        engine = null
+        lastSnapshot = null
+        replayLog.clear()
+        checkpointJob = viewModelScope.launch {
+            runCatching { preferences.clearActiveSession() }
+        }
     }
 
     private fun submit(command: PlayerCommand) {
@@ -678,8 +841,25 @@ class LiveGameViewModel internal constructor(
                 disableSessionPersistence()
             }
         }
-        publish(currentEngine.submit(command))
+        val result = currentEngine.submit(command)
+        publish(result)
+        if (result.events.none { it is GameEvent.CommandRejected }) observeTrainingCommand(command)
         if (command.isReplayable()) checkpoint()
+    }
+
+    private fun observeTrainingCommand(command: PlayerCommand) {
+        when (uiState.tutorialStep) {
+            1 -> if (command is PlayerCommand.SetRoute || command is PlayerCommand.DirectTo ||
+                command is PlayerCommand.AppendWaypoint
+            ) advanceTutorial()
+            2 -> if (command is PlayerCommand.SetTargetAltitude || command is PlayerCommand.SetTargetSpeed) {
+                advanceTutorial()
+            }
+            3 -> if (command is PlayerCommand.ClearToLand || command is PlayerCommand.ClearForTakeoff ||
+                command is PlayerCommand.GoAround
+            ) finishTutorial()
+            else -> Unit
+        }
     }
 
     private fun publish(snapshot: GameSnapshot) {
@@ -700,6 +880,36 @@ class LiveGameViewModel internal constructor(
         val selected = uiState.selectedAircraftId?.takeIf { selectedId ->
             aircraft.any { it.id == selectedId }
         }
+        val objectives = snapshot.toObjectiveProgress()
+        val movementTarget = maxOf(
+            snapshot.objectives.safeMovementsToComplete,
+            snapshot.objectives.arrivalsToLand + snapshot.objectives.departuresToExit,
+        )
+        val movementsRemaining = (movementTarget - snapshot.score.safeArrivals - snapshot.score.safeDepartures)
+            .coerceAtLeast(0)
+        val eventFeed = snapshot.toEventFeed(callsigns)
+        val flightStrips = aircraft.map { item ->
+            FlightStripUiModel(
+                aircraftId = item.id,
+                callsign = item.callsign,
+                phase = item.phase,
+                runwayId = item.assignedRunway,
+                fuelPercent = item.fuelPercent,
+                conflictLevel = item.conflictLevel,
+                clearance = item.clearance,
+                wakeRequiredSeconds = snapshot.wakeSpacing
+                    .firstOrNull { it.followerAircraftId == item.id }?.requiredSeconds?.roundToInt(),
+                wakeActualSeconds = snapshot.wakeSpacing
+                    .firstOrNull { it.followerAircraftId == item.id }?.actualSeconds?.roundToInt(),
+            )
+        }.sortedWith(
+            compareByDescending<FlightStripUiModel> { it.conflictLevel.ordinal }
+                .thenBy { it.fuelPercent }
+                .thenByDescending { it.phase == FlightPhase.APPROACH }
+                .thenBy { it.callsign },
+        )
+        val securedStars = snapshot.objectives.starScoreThresholds.count { snapshot.score.total >= it }
+        val nextThreshold = snapshot.objectives.starScoreThresholds.getOrNull(securedStars)
         uiState = uiState.copy(
             aircraft = aircraft,
             selectedAircraftId = selected,
@@ -723,14 +933,94 @@ class LiveGameViewModel internal constructor(
             isPaused = snapshot.status == GameStatus.PAUSED && !pausedForTutorial,
             timeScale = snapshot.speedMultiplier.roundToInt().coerceIn(1, 2),
             canContinue = snapshot.status.isActive(),
+            objectiveProgress = objectives,
+            movementsRemaining = movementsRemaining,
+            missionTimeRemainingSeconds = ceil(snapshot.maxDurationSeconds - snapshot.elapsedSeconds)
+                .toInt().coerceAtLeast(0),
+            missionOverdue = snapshot.elapsedSeconds >= snapshot.maxDurationSeconds,
+            upcomingTraffic = snapshot.upcomingAircraft.map { upcoming ->
+                UpcomingTrafficUiModel(
+                    aircraftId = upcoming.aircraftId,
+                    callsign = upcoming.callsign,
+                    intent = upcoming.operation.name,
+                    runwayId = upcoming.runwayId,
+                    secondsToEntry = ceil(upcoming.spawnAtSeconds - snapshot.elapsedSeconds)
+                        .toInt().coerceAtLeast(0),
+                )
+            },
+            eventFeed = eventFeed,
+            flightStrips = flightStrips,
+            starForecast = StarForecastUiModel(
+                securedStars = securedStars,
+                pointsToNextStar = nextThreshold?.minus(snapshot.score.total)?.coerceAtLeast(0),
+            ),
+            weatherImpact = snapshot.toWeatherImpact(),
+            runwayProceduresEnabled = snapshot.mechanicVersions.runwayProcedures > 0,
         )
         emitFeedback(snapshot.events)
 
-        if (!wasTerminal && snapshot.status.isTerminal()) handleTerminal(snapshot)
+        if (replayController == null && !wasTerminal && snapshot.status.isTerminal()) handleTerminal(snapshot)
         if (snapshot.status.isActive() && snapshot.tick - lastCheckpointTick >= CHECKPOINT_TICKS) {
             checkpoint()
         }
     }
+
+    private fun GameSnapshot.toObjectiveProgress(): List<ObjectiveProgressUiModel> = buildList {
+        fun addProgress(id: String, label: String, current: Int, target: Int, inverse: Boolean = false) {
+            if (target <= 0 && id != "strikes") return
+            add(
+                ObjectiveProgressUiModel(
+                    id = id,
+                    label = label,
+                    current = current,
+                    target = target,
+                    passed = if (inverse) current <= target else current >= target,
+                ),
+            )
+        }
+        addProgress(
+            "movements",
+            "Safe movements",
+            score.safeArrivals + score.safeDepartures,
+            objectives.safeMovementsToComplete,
+        )
+        addProgress("arrivals", "Arrivals landed", score.safeArrivals, objectives.arrivalsToLand)
+        addProgress("departures", "Departures exited", score.safeDepartures, objectives.departuresToExit)
+        addProgress("score", "Score", score.total, objectives.minimumScore)
+        addProgress("strikes", "Separation strikes", strikes, objectives.maximumStrikes, inverse = true)
+    }
+
+    private fun GameSnapshot.toWeatherImpact(): WeatherImpactUiModel {
+        val crosswind = runways.associate { runway ->
+            val angle = Math.toRadians(weather.windDirectionDegrees - runway.headingDegrees)
+            runway.id to abs(weather.windSpeedKnots * sin(angle)).roundToInt()
+        }
+        return WeatherImpactUiModel(
+            wind = String.format(
+                Locale.UK,
+                "%03.0f° / %02.0f kt",
+                weather.windDirectionDegrees,
+                weather.windSpeedKnots,
+            ),
+            visibility = String.format(Locale.UK, "%.0f km", weather.visibilityKm),
+            crosswindByRunway = crosswind,
+            windDriftActive = mechanicVersions.windDrift > 0,
+            reducedVisibilityActive = mechanicVersions.reducedVisibility > 0 && weather.visibilityKm < 8.0,
+        )
+    }
+
+    private fun GameSnapshot.toEventFeed(callsigns: Map<String, String>): List<EventFeedEntryUiModel> =
+        eventHistory.takeLast(EVENT_FEED_CAPACITY).mapIndexed { index, event ->
+            val ids = event.aircraftIdsForPresentation()
+            EventFeedEntryUiModel(
+                sequence = index.toLong(),
+                elapsedSeconds = event.elapsedSeconds.toInt(),
+                caption = event.toCaption(callsigns),
+                aircraftIds = ids,
+                severity = event.toFeedSeverity(),
+                rejectionCode = (event as? GameEvent.CommandRejected)?.reasonCode?.name,
+            )
+        }
 
     private fun cycleConflict(offset: Int) {
         val count = uiState.conflicts.size
@@ -768,6 +1058,7 @@ class LiveGameViewModel internal constructor(
 
     private fun handleTerminal(snapshot: GameSnapshot) {
         val descriptor = activeDescriptor ?: return
+        saveCompletedReplay(descriptor, snapshot)
         val completed = snapshot.status == GameStatus.COMPLETED
         val isEndless = descriptor.selectionId == ENDLESS_SELECTION_ID
 
@@ -811,16 +1102,176 @@ class LiveGameViewModel internal constructor(
             tutorialStep = if (pausedForTutorial) 0 else null,
             result = snapshot.toResult(title, stars, personalBest, finalScore),
             canContinue = false,
+            progressionSaveStatus = if (completed) {
+                ProgressionSaveStatus.SAVING
+            } else {
+                ProgressionSaveStatus.NOT_REQUIRED
+            },
+            nextMissionId = if (completed && !isEndless) {
+                ManchesterContent.nextMissionId(descriptor.selectionId)
+            } else null,
+            abandonConfirmationVisible = false,
         )
         persistUiState()
-        viewModelScope.launch {
-            if (completed && !isEndless && descriptor.selectionId in ManchesterContent.missionIds) {
-                preferences.recordMissionResult(descriptor.selectionId, stars, finalScore)
-            }
-            if (isEndless) preferences.recordEndlessHighScore(finalScore)
+        pendingProgression = when {
+            completed && !isEndless && descriptor.selectionId in ManchesterContent.missionIds ->
+                PendingProgression(descriptor.selectionId, stars, finalScore, false)
+            isEndless -> PendingProgression(descriptor.selectionId, stars, finalScore, true)
+            else -> null
         }
+        if (pendingProgression != null) {
+            persistPendingProgression()
+        } else {
+            checkpointJob = viewModelScope.launch { runCatching { preferences.clearActiveSession() } }
+        }
+    }
+
+    private fun saveCompletedReplay(descriptor: SessionDescriptor, snapshot: GameSnapshot) {
+        val payload = RestorableSession(
+            descriptor = descriptor,
+            savedTick = snapshot.tick,
+            speedMultiplier = snapshot.speedMultiplier,
+            wasPaused = true,
+            selectedAircraftId = uiState.selectedAircraftId,
+            entries = replayLog.toList(),
+        ).toPayload()
+        if (payload.length > MAX_SESSION_PAYLOAD_CHARS) return
+        val now = System.currentTimeMillis()
+        viewModelScope.launch {
+            preferences.saveCompletedReplay(
+                CompletedReplayRecord(
+                    schemaVersion = SESSION_SCHEMA,
+                    id = "${snapshot.scenarioId}-$now-${snapshot.tick}",
+                    scenarioId = snapshot.scenarioId,
+                    savedAtEpochMillis = now,
+                    terminalTick = snapshot.tick,
+                    finalScore = snapshot.score.total,
+                    terminalHash = snapshot.terminalHash(),
+                    payload = payload,
+                ),
+            )
+        }
+    }
+
+    private fun startReplay(replayId: String) {
+        val record = playerData.completedReplays.firstOrNull { it.id == replayId } ?: return
+        val saved = restorableFromRecord(
+            ActiveSessionRecord(
+                schemaVersion = record.schemaVersion,
+                scenarioId = record.scenarioId,
+                savedAtEpochMillis = record.savedAtEpochMillis,
+                payload = record.payload,
+            ),
+        ) ?: return
+        val content = saved.descriptor.content()
+        val replayEngine = AtcSimulationEngine(content.toSimulationScenario())
+        val first = replayEngine.submit(PlayerCommand.Start)
+        replayController = ReplayController(saved, record.terminalTick, 0)
+        activeDescriptor = saved.descriptor
+        activeContent = content
+        engine = replayEngine
+        lastSnapshot = null
+        trails.clear()
+        uiState = uiState.copy(
+            screen = AppScreen.GAME,
+            selectedMissionId = saved.descriptor.selectionId,
+            selectedAircraftId = null,
+            tutorialStep = null,
+            replay = ReplayUiModel(
+                isPlaying = false,
+                tick = 0,
+                terminalTick = record.terminalTick,
+                speed = 1,
+            ),
+            result = null,
+            canContinue = false,
+        )
+        publish(first)
+    }
+
+    private fun advanceReplay(stepCount: Int) {
+        val controller = replayController ?: return
+        var current = engine?.snapshot ?: return
+        if (current.tick >= controller.terminalTick || current.status.isTerminal()) {
+            uiState = uiState.copy(replay = uiState.replay?.copy(isPlaying = false, tick = current.tick))
+            return
+        }
+        repeat(stepCount.coerceIn(1, 4)) {
+            if (current.tick >= controller.terminalTick || current.status.isTerminal()) return@repeat
+            while (controller.nextEntryIndex < controller.saved.entries.size &&
+                controller.saved.entries[controller.nextEntryIndex].tick == current.tick
+            ) {
+                current = checkNotNull(engine).submit(
+                    controller.saved.entries[controller.nextEntryIndex].command,
+                )
+                controller.nextEntryIndex += 1
+            }
+            current = checkNotNull(engine).advanceFixedSteps(1)
+        }
+        publish(current)
+        uiState = uiState.copy(
+            replay = uiState.replay?.copy(
+                tick = current.tick,
+                isPlaying = uiState.replay?.isPlaying == true &&
+                    current.tick < controller.terminalTick && !current.status.isTerminal(),
+            ),
+        )
+    }
+
+    private fun seekReplay(requestedTick: Long) {
+        val controller = replayController ?: return
+        val target = requestedTick.coerceIn(0L, controller.terminalTick)
+        val content = controller.saved.descriptor.content()
+        val replayEngine = AtcSimulationEngine(content.toSimulationScenario())
+        var snapshot = replayEngine.submit(PlayerCommand.Start)
+        var entryIndex = 0
+        while (snapshot.tick < target && !snapshot.status.isTerminal()) {
+            while (entryIndex < controller.saved.entries.size &&
+                controller.saved.entries[entryIndex].tick == snapshot.tick
+            ) {
+                snapshot = replayEngine.submit(controller.saved.entries[entryIndex].command)
+                entryIndex += 1
+            }
+            snapshot = replayEngine.advanceFixedSteps(1)
+        }
+        engine = replayEngine
+        controller.nextEntryIndex = entryIndex
+        lastSnapshot = null
+        trails.clear()
+        publish(snapshot)
+        uiState = uiState.copy(replay = uiState.replay?.copy(isPlaying = false, tick = snapshot.tick))
+    }
+
+    private fun persistPendingProgression() {
+        val pending = pendingProgression ?: restoredPendingProgression() ?: return
+        pendingProgression = pending
+        uiState = uiState.copy(progressionSaveStatus = ProgressionSaveStatus.SAVING)
+        persistUiState()
         checkpointJob = viewModelScope.launch {
-            preferences.clearActiveSession()
+            try {
+                if (pending.endless) {
+                    preferences.recordEndlessHighScore(pending.score)
+                } else {
+                    preferences.recordMissionResult(pending.missionId, pending.stars, pending.score)
+                }
+                preferences.clearActiveSession()
+                pendingProgression = null
+                uiState = uiState.copy(progressionSaveStatus = ProgressionSaveStatus.SAVED)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                uiState = uiState.copy(progressionSaveStatus = ProgressionSaveStatus.FAILED)
+            }
+            persistUiState()
+        }
+    }
+
+    private fun openNextMission() {
+        if (uiState.progressionSaveStatus != ProgressionSaveStatus.SAVED) return
+        val nextId = uiState.nextMissionId ?: return navigate(AppScreen.MISSIONS)
+        if (uiState.missions.any { it.id == nextId }) {
+            uiState = uiState.copy(selectedMissionId = nextId, screen = AppScreen.MISSIONS)
+            persistUiState()
         }
     }
 
@@ -877,7 +1328,7 @@ class LiveGameViewModel internal constructor(
 
     private fun applyPlayerData(updated: PlayerData) {
         playerData = updated
-        val activeInMemory = lastSnapshot?.status?.isActive() == true
+        val activeInMemory = replayController == null && lastSnapshot?.status?.isActive() == true
         val record = updated.activeSession
         val recordKey = record?.toSessionKey()
         val persisted = !activeInMemory && !suppressPersistedSession &&
@@ -893,7 +1344,21 @@ class LiveGameViewModel internal constructor(
             settings = updated.settings.toUiState(),
             settingsLoaded = true,
             canContinue = activeInMemory || persisted,
+            completedReplays = updated.completedReplays.map { replay ->
+                CompletedReplayUiModel(
+                    id = replay.id,
+                    scenarioId = replay.scenarioId,
+                    score = replay.finalScore,
+                    terminalTick = replay.terminalTick,
+                )
+            },
         )
+        if (resumePendingProgressionOnLoad &&
+            uiState.progressionSaveStatus in setOf(ProgressionSaveStatus.SAVING, ProgressionSaveStatus.FAILED)
+        ) {
+            resumePendingProgressionOnLoad = false
+            persistPendingProgression()
+        }
         if (restorePersistedSessionOnLoad) {
             restorePersistedSessionOnLoad = false
             if (record != null) {
@@ -986,6 +1451,25 @@ class LiveGameViewModel internal constructor(
         savedStateHandle[STATE_RESULT_SEPARATION] = result.separationPenalty
         savedStateHandle[STATE_RESULT_PERSONAL_BEST] = result.personalBest
         savedStateHandle[STATE_RESULT_SUCCESSFUL] = result.successful
+        savedStateHandle[STATE_RESULT_ROWS] = result.scoreRows.joinToString(";") { "${it.id}:${it.points}" }
+        if (result.pointsToNextStar == null) {
+            savedStateHandle.remove<Int>(STATE_RESULT_NEXT_STAR)
+        } else {
+            savedStateHandle[STATE_RESULT_NEXT_STAR] = result.pointsToNextStar
+        }
+        savedStateHandle[STATE_PROGRESSION_STATUS] = uiState.progressionSaveStatus.name
+        savedStateHandle[STATE_NEXT_MISSION] = uiState.nextMissionId
+    }
+
+    private fun restoredPendingProgression(): PendingProgression? {
+        val result = uiState.result?.takeIf { it.successful } ?: return null
+        val missionId = uiState.selectedMissionId.takeIf { it in ManchesterContent.missionIds }
+            ?: return null
+        if (uiState.progressionSaveStatus !in setOf(
+                ProgressionSaveStatus.SAVING,
+                ProgressionSaveStatus.FAILED,
+            )) return null
+        return PendingProgression(missionId, result.stars, result.score, false)
     }
 
     private fun resultFromSavedState(): MissionResultUiModel? {
@@ -1000,7 +1484,31 @@ class LiveGameViewModel internal constructor(
             separationPenalty = savedStateHandle.get<Int>(STATE_RESULT_SEPARATION) ?: return null,
             personalBest = savedStateHandle.get<Boolean>(STATE_RESULT_PERSONAL_BEST) ?: false,
             successful = savedStateHandle.get<Boolean>(STATE_RESULT_SUCCESSFUL) ?: true,
+            scoreRows = savedStateHandle.get<String>(STATE_RESULT_ROWS).orEmpty()
+                .split(';')
+                .mapNotNull { encoded ->
+                    val parts = encoded.split(':', limit = 2)
+                    if (parts.size != 2) null else parts[1].toIntOrNull()?.let { points ->
+                        ScoreRowUiModel(parts[0], scoreRowLabel(parts[0]), points)
+                    }
+                },
+            pointsToNextStar = savedStateHandle.get<Int>(STATE_RESULT_NEXT_STAR),
         )
+    }
+
+    private fun scoreRowLabel(id: String): String = when (id) {
+        "movements" -> "Safe movements"
+        "route" -> "Route efficiency"
+        "time" -> "Time"
+        "completion" -> "Completion"
+        "go_around" -> "Go-arounds"
+        "missed_exit" -> "Missed exits"
+        "separation" -> "Separation"
+        "runway" -> "Runway procedure"
+        "wake" -> "Wake spacing"
+        "other" -> "Other penalties"
+        "carried" -> "Previous stage / score floor"
+        else -> id.replace('_', ' ').replaceFirstChar(Char::uppercase)
     }
 
     private fun recordTrails(snapshot: GameSnapshot) {
@@ -1174,6 +1682,9 @@ class LiveGameViewModel internal constructor(
                 when (val command = entry.command) {
                     is PlayerCommand.ClearForTakeoff -> require(command.runwayId in runwayIds)
                     is PlayerCommand.ClearToLand -> require(command.runwayId in runwayIds)
+                    is PlayerCommand.AssignRunway -> require(command.runwayId in runwayIds)
+                    is PlayerCommand.AssignApproach -> require(command.runwayId in runwayIds)
+                    is PlayerCommand.LineUpAndWait -> require(command.runwayId in runwayIds)
                     else -> Unit
                 }
             }
@@ -1224,9 +1735,28 @@ class LiveGameViewModel internal constructor(
                 aircraftId,
                 checkNotNull(value.toDoubleOrNull()).also { require(it in 1_000.0..10_000.0) },
             )
+            "D" -> parseWaypoint(value).let { PlayerCommand.DirectTo(aircraftId, it) }
+            "P" -> parseWaypoint(value).let { PlayerCommand.AppendWaypoint(aircraftId, it) }
+            "U" -> PlayerCommand.UndoWaypoint(aircraftId)
+            "C" -> PlayerCommand.ClearRoute(aircraftId)
+            "W" -> PlayerCommand.AssignRunway(aircraftId, value.also { require(it.isNotBlank()) })
+            "I" -> PlayerCommand.AssignApproach(aircraftId, value.also { require(it.isNotBlank()) })
+            "X" -> PlayerCommand.CancelApproach(aircraftId)
+            "Q" -> PlayerCommand.LineUpAndWait(aircraftId, value.also { require(it.isNotBlank()) })
+            "K" -> PlayerCommand.CancelLandingClearance(aircraftId)
+            "O" -> PlayerCommand.CancelTakeoffClearance(aircraftId)
             else -> error("Unknown replay command")
         }
         return ReplayEntry(tick, command)
+    }
+
+    private fun parseWaypoint(value: String): Vec2 {
+        val coordinates = value.split(',', limit = 2)
+        require(coordinates.size == 2)
+        return Vec2(
+            checkNotNull(coordinates[0].toDoubleOrNull()),
+            checkNotNull(coordinates[1].toDoubleOrNull()),
+        )
     }
 
     private sealed interface SessionDescriptor {
@@ -1261,6 +1791,16 @@ class LiveGameViewModel internal constructor(
                 is PlayerCommand.ClearToLand -> listOf("L", command.aircraftId, command.runwayId)
                 is PlayerCommand.ClearForTakeoff -> listOf("T", command.aircraftId, command.runwayId)
                 is PlayerCommand.GoAround -> listOf("G", command.aircraftId, command.targetAltitudeFeet.toString())
+                is PlayerCommand.DirectTo -> listOf("D", command.aircraftId, "${command.waypoint.x},${command.waypoint.y}")
+                is PlayerCommand.AppendWaypoint -> listOf("P", command.aircraftId, "${command.waypoint.x},${command.waypoint.y}")
+                is PlayerCommand.UndoWaypoint -> listOf("U", command.aircraftId, "")
+                is PlayerCommand.ClearRoute -> listOf("C", command.aircraftId, "")
+                is PlayerCommand.AssignRunway -> listOf("W", command.aircraftId, command.runwayId)
+                is PlayerCommand.AssignApproach -> listOf("I", command.aircraftId, command.runwayId)
+                is PlayerCommand.CancelApproach -> listOf("X", command.aircraftId, "")
+                is PlayerCommand.LineUpAndWait -> listOf("Q", command.aircraftId, command.runwayId)
+                is PlayerCommand.CancelLandingClearance -> listOf("K", command.aircraftId, "")
+                is PlayerCommand.CancelTakeoffClearance -> listOf("O", command.aircraftId, "")
                 PlayerCommand.Start,
                 PlayerCommand.Pause,
                 PlayerCommand.Resume,
@@ -1304,11 +1844,24 @@ class LiveGameViewModel internal constructor(
         val restored: RestoredEngine,
     )
 
+    private data class ReplayController(
+        val saved: RestorableSession,
+        val terminalTick: Long,
+        var nextEntryIndex: Int,
+    )
+
     private data class SessionRecordKey(
         val schemaVersion: Int,
         val scenarioId: String,
         val savedAtEpochMillis: Long,
         val payloadLength: Int,
+    )
+
+    private data class PendingProgression(
+        val missionId: String,
+        val stars: Int,
+        val score: Int,
+        val endless: Boolean,
     )
 
     companion object {
@@ -1318,6 +1871,7 @@ class LiveGameViewModel internal constructor(
         private const val CHECKPOINT_TICKS = 50L
         private const val RESTORE_STEP_CHUNK = 100
         private const val TRAIL_POINT_COUNT = 10
+        private const val EVENT_FEED_CAPACITY = 200
         private const val LAST_TUTORIAL_STEP = 3
         private const val SESSION_SCHEMA = 2
         private const val SESSION_PAYLOAD_PREFIX = "replay-v2"
@@ -1340,6 +1894,10 @@ class LiveGameViewModel internal constructor(
         private const val STATE_RESULT_SEPARATION = "ui.result.separation"
         private const val STATE_RESULT_PERSONAL_BEST = "ui.result.personalBest"
         private const val STATE_RESULT_SUCCESSFUL = "ui.result.successful"
+        private const val STATE_RESULT_ROWS = "ui.result.rows"
+        private const val STATE_RESULT_NEXT_STAR = "ui.result.nextStar"
+        private const val STATE_PROGRESSION_STATUS = "ui.progression.status"
+        private const val STATE_NEXT_MISSION = "ui.progression.nextMission"
         private val RESULT_STATE_KEYS = listOf(
             STATE_RESULT_TITLE,
             STATE_RESULT_STARS,
@@ -1350,6 +1908,10 @@ class LiveGameViewModel internal constructor(
             STATE_RESULT_SEPARATION,
             STATE_RESULT_PERSONAL_BEST,
             STATE_RESULT_SUCCESSFUL,
+            STATE_RESULT_ROWS,
+            STATE_RESULT_NEXT_STAR,
+            STATE_PROGRESSION_STATUS,
+            STATE_NEXT_MISSION,
         )
 
         private fun initialUiState(resources: Resources) = GameUiState(
@@ -1570,7 +2132,8 @@ private val AircraftType.displayCode: String
 private fun AircraftStatus.toUiPhase(): FlightPhase = when (this) {
     AircraftStatus.INBOUND, AircraftStatus.GO_AROUND -> FlightPhase.ARRIVAL
     AircraftStatus.APPROACH, AircraftStatus.LANDING -> FlightPhase.APPROACH
-    AircraftStatus.HOLDING_SHORT, AircraftStatus.TAKEOFF_ROLL, AircraftStatus.DEPARTING -> FlightPhase.DEPARTURE
+    AircraftStatus.HOLDING_SHORT, AircraftStatus.LINED_UP,
+    AircraftStatus.TAKEOFF_ROLL, AircraftStatus.DEPARTING -> FlightPhase.DEPARTURE
     AircraftStatus.LANDED -> FlightPhase.LANDED
     AircraftStatus.EXITED, AircraftStatus.CRASHED -> FlightPhase.EXITED
 }
@@ -1587,6 +2150,7 @@ private fun Clearance.toUiText(status: AircraftStatus, resources: Resources): St
         AircraftStatus.APPROACH -> resources.getString(R.string.clearance_approach)
         AircraftStatus.GO_AROUND -> resources.getString(R.string.clearance_go_around_status)
         AircraftStatus.HOLDING_SHORT -> resources.getString(R.string.clearance_hold_short)
+        AircraftStatus.LINED_UP -> "Lined up and waiting"
         AircraftStatus.TAKEOFF_ROLL -> resources.getString(R.string.clearance_takeoff_roll)
         AircraftStatus.DEPARTING -> resources.getString(R.string.clearance_climb_exit)
         AircraftStatus.LANDING -> resources.getString(R.string.clearance_landing_roll)
@@ -1594,6 +2158,8 @@ private fun Clearance.toUiText(status: AircraftStatus, resources: Resources): St
         AircraftStatus.EXITED -> resources.getString(R.string.clearance_frequency_changed)
         AircraftStatus.CRASHED -> resources.getString(R.string.clearance_emergency)
     }
+    is Clearance.Approach -> "Approach runway $runwayId"
+    is Clearance.LineUpAndWait -> "Line up and wait runway $runwayId"
     is Clearance.Land -> resources.getString(R.string.clearance_land_runway, runwayId)
     is Clearance.Takeoff -> resources.getString(R.string.clearance_takeoff_runway, runwayId)
     is Clearance.GoAround -> resources.getString(
@@ -1634,7 +2200,46 @@ private fun GameSnapshot.toResult(
     separationPenalty = score.penalties,
     personalBest = personalBest,
     successful = status == GameStatus.COMPLETED,
+    scoreRows = buildList {
+        add(ScoreRowUiModel("movements", "Safe movements", score.basePoints))
+        add(ScoreRowUiModel("route", "Route efficiency", score.efficiencyPoints))
+        add(ScoreRowUiModel("time", "Time", score.timeBonusPoints))
+        add(ScoreRowUiModel("completion", "Completion", score.completionBonusPoints))
+        add(ScoreRowUiModel("go_around", "Go-arounds", -score.goAroundPenaltyPoints))
+        add(ScoreRowUiModel("missed_exit", "Missed exits", -score.missedExitPenaltyPoints))
+        add(ScoreRowUiModel("separation", "Separation", -score.separationPenaltyPoints))
+        add(ScoreRowUiModel("runway", "Runway procedure", -score.runwayProcedurePenaltyPoints))
+        add(ScoreRowUiModel("wake", "Wake spacing", -score.wakePenaltyPoints))
+        val categorized = score.goAroundPenaltyPoints + score.missedExitPenaltyPoints +
+            score.separationPenaltyPoints + score.runwayProcedurePenaltyPoints + score.wakePenaltyPoints
+        val otherPenalty = (score.penalties - categorized).coerceAtLeast(0)
+        if (otherPenalty > 0) add(ScoreRowUiModel("other", "Other penalties", -otherPenalty))
+        val represented = sumOf(ScoreRowUiModel::points)
+        if (displayedScore != represented) {
+            add(ScoreRowUiModel("carried", "Previous stage / score floor", displayedScore - represented))
+        }
+    },
+    pointsToNextStar = objectives.starScoreThresholds.firstOrNull { displayedScore < it }
+        ?.minus(displayedScore),
 )
+
+private fun GameSnapshot.terminalHash(): String {
+    val canonical = buildString {
+        append(scenarioId).append('|').append(tick).append('|').append(status.name)
+        append('|').append(score.total).append('|').append(strikes)
+        aircraft.sortedBy { it.id }.forEach { state ->
+            append('|').append(state.id).append(':').append(state.status.name)
+            append(':').append(state.position.x).append(',').append(state.position.y)
+            append(':').append(state.altitudeFeet).append(':').append(state.speedKnots)
+        }
+        runways.sortedBy { it.id }.forEach { runway ->
+            append('|').append(runway.id).append(':').append(runway.occupiedByAircraftId.orEmpty())
+        }
+    }
+    return MessageDigest.getInstance("SHA-256")
+        .digest(canonical.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(Locale.ROOT, it) }
+}
 
 private fun FailureReason?.toDisplayText(resources: Resources): String = resources.getString(when (this) {
     FailureReason.TOO_MANY_STRIKES -> R.string.failure_too_many_strikes
@@ -1650,12 +2255,22 @@ private fun GameStatus.isActive() = this == GameStatus.RUNNING || this == GameSt
 private fun GameStatus.isTerminal() = this == GameStatus.COMPLETED || this == GameStatus.FAILED
 
 private fun PlayerCommand.isReplayable() = when (this) {
+    is PlayerCommand.AppendWaypoint,
+    is PlayerCommand.AssignApproach,
+    is PlayerCommand.AssignRunway,
+    is PlayerCommand.CancelApproach,
+    is PlayerCommand.CancelLandingClearance,
+    is PlayerCommand.CancelTakeoffClearance,
+    is PlayerCommand.ClearRoute,
     is PlayerCommand.ClearForTakeoff,
     is PlayerCommand.ClearToLand,
+    is PlayerCommand.DirectTo,
     is PlayerCommand.GoAround,
+    is PlayerCommand.LineUpAndWait,
     is PlayerCommand.SetRoute,
     is PlayerCommand.SetTargetAltitude,
-    is PlayerCommand.SetTargetSpeed -> true
+    is PlayerCommand.SetTargetSpeed,
+    is PlayerCommand.UndoWaypoint -> true
     PlayerCommand.Pause,
     PlayerCommand.Resume,
     PlayerCommand.Start,
@@ -1663,12 +2278,22 @@ private fun PlayerCommand.isReplayable() = when (this) {
 }
 
 private fun PlayerCommand.aircraftId(): String = when (this) {
+    is PlayerCommand.AppendWaypoint -> aircraftId
+    is PlayerCommand.AssignApproach -> aircraftId
+    is PlayerCommand.AssignRunway -> aircraftId
+    is PlayerCommand.CancelApproach -> aircraftId
+    is PlayerCommand.CancelLandingClearance -> aircraftId
+    is PlayerCommand.CancelTakeoffClearance -> aircraftId
+    is PlayerCommand.ClearRoute -> aircraftId
     is PlayerCommand.ClearForTakeoff -> aircraftId
     is PlayerCommand.ClearToLand -> aircraftId
+    is PlayerCommand.DirectTo -> aircraftId
     is PlayerCommand.GoAround -> aircraftId
+    is PlayerCommand.LineUpAndWait -> aircraftId
     is PlayerCommand.SetRoute -> aircraftId
     is PlayerCommand.SetTargetAltitude -> aircraftId
     is PlayerCommand.SetTargetSpeed -> aircraftId
+    is PlayerCommand.UndoWaypoint -> aircraftId
     PlayerCommand.Pause,
     PlayerCommand.Resume,
     PlayerCommand.Start,
@@ -1676,20 +2301,89 @@ private fun PlayerCommand.aircraftId(): String = when (this) {
 }
 
 private fun GameEvent.feedbackKind(): LiveFeedbackKind? = when (this) {
-    is GameEvent.Collision, is GameEvent.RunwayIncursion, is GameEvent.ScenarioFailed -> LiveFeedbackKind.FAILURE
+    is GameEvent.Collision, is GameEvent.RunwayIncursion, is GameEvent.ScenarioFailed,
+    is GameEvent.WakeViolation -> LiveFeedbackKind.FAILURE
     is GameEvent.CommandRejected,
     is GameEvent.ConflictWarning,
     is GameEvent.SeparationLost,
-    is GameEvent.StrikeIssued -> LiveFeedbackKind.WARNING
+    is GameEvent.StrikeIssued, is GameEvent.WakeWarning -> LiveFeedbackKind.WARNING
     is GameEvent.AircraftExited,
     is GameEvent.Landed,
     is GameEvent.ScenarioCompleted,
     is GameEvent.Takeoff,
     is GameEvent.Touchdown -> LiveFeedbackKind.SUCCESS
-    is GameEvent.ClearanceIssued, is GameEvent.RouteUpdated -> LiveFeedbackKind.CONFIRMATION
+    is GameEvent.ClearanceIssued, is GameEvent.RouteUpdated, is GameEvent.RunwayAssigned,
+    is GameEvent.ApproachAssigned, is GameEvent.ClearanceCancelled -> LiveFeedbackKind.CONFIRMATION
     is GameEvent.AircraftLeftAirspace,
     is GameEvent.AircraftSpawned,
-    is GameEvent.GoAround -> null
+    is GameEvent.GoAround, is GameEvent.RunwayOccupied, is GameEvent.RunwayVacated -> null
+}
+
+private fun GameEvent.aircraftIdsForPresentation(): List<String> = when (this) {
+    is GameEvent.AircraftSpawned -> listOf(aircraftId)
+    is GameEvent.RouteUpdated -> listOf(aircraftId)
+    is GameEvent.ClearanceIssued -> listOf(aircraftId)
+    is GameEvent.CommandRejected -> listOfNotNull(aircraftId)
+    is GameEvent.ConflictWarning -> listOf(conflict.firstAircraftId, conflict.secondAircraftId)
+    is GameEvent.SeparationLost -> listOf(conflict.firstAircraftId, conflict.secondAircraftId)
+    is GameEvent.StrikeIssued -> aircraftIds.sorted()
+    is GameEvent.Collision -> listOf(conflict.firstAircraftId, conflict.secondAircraftId)
+    is GameEvent.GoAround -> listOf(aircraftId)
+    is GameEvent.Touchdown -> listOf(aircraftId)
+    is GameEvent.Landed -> listOf(aircraftId)
+    is GameEvent.Takeoff -> listOf(aircraftId)
+    is GameEvent.AircraftExited -> listOf(aircraftId)
+    is GameEvent.AircraftLeftAirspace -> listOf(aircraftId)
+    is GameEvent.RunwayIncursion -> aircraftIds.sorted()
+    is GameEvent.RunwayAssigned -> listOf(aircraftId)
+    is GameEvent.ApproachAssigned -> listOf(aircraftId)
+    is GameEvent.ClearanceCancelled -> listOf(aircraftId)
+    is GameEvent.RunwayOccupied -> listOf(aircraftId)
+    is GameEvent.RunwayVacated -> listOf(aircraftId)
+    is GameEvent.WakeWarning -> listOf(leaderAircraftId, followerAircraftId)
+    is GameEvent.WakeViolation -> listOf(leaderAircraftId, followerAircraftId)
+    is GameEvent.ScenarioCompleted, is GameEvent.ScenarioFailed -> emptyList()
+}
+
+private fun GameEvent.toFeedSeverity(): EventFeedSeverity = when (this) {
+    is GameEvent.Collision, is GameEvent.RunwayIncursion, is GameEvent.ScenarioFailed,
+    is GameEvent.WakeViolation -> EventFeedSeverity.CRITICAL
+    is GameEvent.CommandRejected, is GameEvent.ConflictWarning, is GameEvent.SeparationLost,
+    is GameEvent.StrikeIssued, is GameEvent.AircraftLeftAirspace,
+    is GameEvent.WakeWarning -> EventFeedSeverity.WARNING
+    is GameEvent.Landed, is GameEvent.Takeoff, is GameEvent.AircraftExited,
+    is GameEvent.ScenarioCompleted -> EventFeedSeverity.SUCCESS
+    else -> EventFeedSeverity.ROUTINE
+}
+
+private fun GameEvent.toCaption(callsigns: Map<String, String>): String {
+    fun call(id: String) = callsigns[id] ?: id
+    return when (this) {
+        is GameEvent.AircraftSpawned -> "${call(aircraftId)} entered the sector"
+        is GameEvent.RouteUpdated -> "${call(aircraftId)} route updated"
+        is GameEvent.ClearanceIssued -> "${call(aircraftId)}: ${clearance.toString()}"
+        is GameEvent.CommandRejected -> listOfNotNull(aircraftId?.let(::call), reason).joinToString(": ")
+        is GameEvent.ConflictWarning -> "Conflict predicted: ${call(conflict.firstAircraftId)} / ${call(conflict.secondAircraftId)}"
+        is GameEvent.SeparationLost -> "Separation lost: ${call(conflict.firstAircraftId)} / ${call(conflict.secondAircraftId)}"
+        is GameEvent.StrikeIssued -> "Separation strike: ${aircraftIds.sorted().joinToString(" / ") { call(it) }}"
+        is GameEvent.Collision -> "Collision: ${call(conflict.firstAircraftId)} / ${call(conflict.secondAircraftId)}"
+        is GameEvent.GoAround -> "${call(aircraftId)} going around${if (automatic) " automatically" else ""}"
+        is GameEvent.Touchdown -> "${call(aircraftId)} touchdown runway $runwayId"
+        is GameEvent.Landed -> "${call(aircraftId)} runway $runwayId vacated"
+        is GameEvent.Takeoff -> "${call(aircraftId)} airborne runway $runwayId"
+        is GameEvent.AircraftExited -> "${call(aircraftId)} left via ${if (correctExit) "assigned" else "wrong"} exit"
+        is GameEvent.AircraftLeftAirspace -> "${call(aircraftId)} left controlled airspace"
+        is GameEvent.RunwayIncursion -> "Runway $runwayId incursion: ${aircraftIds.sorted().joinToString(" / ") { call(it) }}"
+        is GameEvent.RunwayAssigned -> "${call(aircraftId)} assigned runway $runwayId"
+        is GameEvent.ApproachAssigned -> "${call(aircraftId)} ${runwayId?.let { "approach runway $it" } ?: "approach cancelled"}"
+        is GameEvent.ClearanceCancelled -> "${call(aircraftId)} $clearanceType clearance cancelled"
+        is GameEvent.RunwayOccupied -> "Runway $runwayEndId occupied by ${call(aircraftId)}"
+        is GameEvent.RunwayVacated -> "Physical runway $physicalRunwayId vacated by ${call(aircraftId)}"
+        is GameEvent.WakeWarning -> "Wake spacing: ${call(leaderAircraftId)} / ${call(followerAircraftId)} ${actualSeconds.roundToInt()}s of ${requiredSeconds.roundToInt()}s"
+        is GameEvent.WakeViolation -> "Wake violation: ${call(leaderAircraftId)} / ${call(followerAircraftId)}"
+        is GameEvent.ScenarioCompleted -> "Shift completed"
+        is GameEvent.ScenarioFailed -> "Shift failed: ${reason.name.replace('_', ' ').lowercase()}"
+    }
 }
 
 private fun TutorialFocus.subtitle(resources: Resources): String = resources.getString(when (this) {

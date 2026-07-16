@@ -21,6 +21,7 @@ enum class AircraftStatus {
     APPROACH,
     GO_AROUND,
     HOLDING_SHORT,
+    LINED_UP,
     TAKEOFF_ROLL,
     DEPARTING,
     LANDING,
@@ -51,6 +52,8 @@ sealed interface Clearance {
         override fun toString() = "None"
     }
 
+    data class Approach(val runwayId: String) : Clearance
+    data class LineUpAndWait(val runwayId: String) : Clearance
     data class Land(val runwayId: String) : Clearance
     data class Takeoff(val runwayId: String) : Clearance
     data class GoAround(val targetAltitudeFeet: Double) : Clearance
@@ -74,6 +77,8 @@ data class AircraftState(
     val clearance: Clearance = Clearance.None,
     /** Assigned runway for a departure, or the runway currently used by an arrival. */
     val runwayId: String? = null,
+    /** Runway end whose simplified final approach has been assigned. */
+    val approachRunwayId: String? = null,
     /** The desired terminal-area exit for a departure. */
     val exitPoint: Vec2? = null,
     /** Total deterministic endurance assigned when this aircraft enters the scenario. */
@@ -167,11 +172,39 @@ data class RunwayState(
     val headingDegrees: Double,
     val active: Boolean = true,
     val occupiedByAircraftId: String? = null,
+    /** Both directional ends of one strip share this stable physical identity. */
+    val physicalRunwayId: String = id,
+    /** Empty means no aircraft performance restriction. */
+    val compatibleAircraftTypes: Set<AircraftType> = emptySet(),
 ) {
     init {
         require(id.isNotBlank()) { "Runway id must not be blank" }
         require(headingDegrees.isFinite()) { "Runway heading must be finite" }
         require(threshold != end) { "Runway endpoints must differ" }
+    }
+}
+
+/** Authored, deterministic conditions. Mechanics remain disabled until their version is non-zero. */
+data class WeatherState(
+    val windDirectionDegrees: Double = 0.0,
+    val windSpeedKnots: Double = 0.0,
+    val visibilityKm: Double = 10.0,
+) {
+    init {
+        require(windDirectionDegrees.isFinite())
+        require(windSpeedKnots.isFinite() && windSpeedKnots >= 0.0)
+        require(visibilityKm.isFinite() && visibilityKm > 0.0)
+    }
+}
+
+data class MechanicVersions(
+    val runwayProcedures: Int = 0,
+    val wakeTurbulence: Int = 0,
+    val windDrift: Int = 0,
+    val reducedVisibility: Int = 0,
+) {
+    init {
+        require(listOf(runwayProcedures, wakeTurbulence, windDrift, reducedVisibility).all { it >= 0 })
     }
 }
 
@@ -229,6 +262,8 @@ data class ScenarioScoringRules(
     val automaticGoAroundPenaltyPoints: Int = 200,
     val manualGoAroundPenaltyPoints: Int = 50,
     val missedExitPenaltyPoints: Int = 250,
+    val runwayProcedurePenaltyPoints: Int = 250,
+    val wakeViolationPenaltyPoints: Int = 300,
 ) {
     init {
         require(
@@ -242,6 +277,8 @@ data class ScenarioScoringRules(
                 automaticGoAroundPenaltyPoints,
                 manualGoAroundPenaltyPoints,
                 missedExitPenaltyPoints,
+                runwayProcedurePenaltyPoints,
+                wakeViolationPenaltyPoints,
             ).all { it >= 0 },
         ) { "Scoring points and penalties must not be negative" }
         require(
@@ -266,6 +303,8 @@ data class ScenarioDefinition(
     val mapHeightNm: Double = 24.0,
     val maxDurationSeconds: Double = 600.0,
     val maxStrikes: Int = 3,
+    val weather: WeatherState = WeatherState(),
+    val mechanicVersions: MechanicVersions = MechanicVersions(),
 ) {
     init {
         require(id.isNotBlank() && title.isNotBlank())
@@ -314,11 +353,97 @@ data class ScoreBreakdown(
     val completionBonusPoints: Int = 0,
     /** A positive number which is subtracted from the earned score. */
     val penalties: Int = 0,
+    val goAroundPenaltyPoints: Int = 0,
+    val missedExitPenaltyPoints: Int = 0,
+    val separationPenaltyPoints: Int = 0,
+    val runwayProcedurePenaltyPoints: Int = 0,
+    val wakePenaltyPoints: Int = 0,
 ) {
     val total: Int
         get() = (
             basePoints.toLong() + efficiencyPoints + timeBonusPoints + completionBonusPoints - penalties
         ).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+}
+
+enum class CommandRejectionReason {
+    SIMULATION_NOT_RUNNING,
+    SIMULATION_NOT_PAUSED,
+    SIMULATION_ALREADY_STARTED,
+    SIMULATION_NOT_ACTIVE,
+    MECHANIC_NOT_ENABLED,
+    AIRCRAFT_NOT_ACTIVE,
+    AIRCRAFT_STATE_INELIGIBLE,
+    INVALID_ALTITUDE,
+    INVALID_SPEED,
+    INVALID_ROUTE,
+    UNKNOWN_RUNWAY,
+    RUNWAY_INACTIVE,
+    RUNWAY_OCCUPIED,
+    RUNWAY_RECIPROCAL_CONFLICT,
+    RUNWAY_CLASS_INCOMPATIBLE,
+    RUNWAY_WIND_UNSUITABLE,
+    RUNWAY_ASSIGNMENT_MISMATCH,
+    ARRIVAL_REQUIRED,
+    DEPARTURE_REQUIRED,
+    APPROACH_NOT_ASSIGNED,
+    CLEARANCE_NOT_ACTIVE,
+    WAKE_SPACING_INSUFFICIENT,
+    INVALID_GO_AROUND_ALTITUDE,
+    UNKNOWN,
+}
+
+/** Version-one simplified time minima in seconds, deliberately independent of localized UI. */
+object WakeSeparationRules {
+    const val VERSION = 1
+
+    fun requiredSeconds(leader: AircraftType, follower: AircraftType, version: Int = VERSION): Double {
+        require(version == VERSION) { "Unknown wake-separation version $version" }
+        return when (leader) {
+            AircraftType.HEAVY -> when (follower) {
+                AircraftType.LIGHT -> 180.0
+                AircraftType.REGIONAL -> 150.0
+                AircraftType.JET -> 120.0
+                AircraftType.HEAVY -> 90.0
+            }
+            AircraftType.JET -> when (follower) {
+                AircraftType.LIGHT -> 120.0
+                AircraftType.REGIONAL -> 90.0
+                AircraftType.JET, AircraftType.HEAVY -> 60.0
+            }
+            AircraftType.REGIONAL -> if (follower == AircraftType.LIGHT) 90.0 else 60.0
+            AircraftType.LIGHT -> 60.0
+        }
+    }
+}
+
+object WeatherOperations {
+    fun crosswindKnots(weather: WeatherState, runwayHeadingDegrees: Double): Double {
+        val angle = Math.toRadians(weather.windDirectionDegrees - runwayHeadingDegrees)
+        return kotlin.math.abs(weather.windSpeedKnots * kotlin.math.sin(angle))
+    }
+
+    fun maximumCrosswindKnots(type: AircraftType): Double = when (type) {
+        AircraftType.LIGHT -> 18.0
+        AircraftType.REGIONAL -> 25.0
+        AircraftType.JET -> 30.0
+        AircraftType.HEAVY -> 32.0
+    }
+
+    fun isRunwaySuitable(weather: WeatherState, runway: RunwayState, type: AircraftType): Boolean =
+        (runway.compatibleAircraftTypes.isEmpty() || type in runway.compatibleAircraftTypes) &&
+            crosswindKnots(weather, runway.headingDegrees) <= maximumCrosswindKnots(type)
+
+    fun stabilizedApproachGateNm(visibilityKm: Double, normalGateNm: Double = 1.0): Double = when {
+        visibilityKm < 3.0 -> maxOf(normalGateNm, 2.5)
+        visibilityKm < 6.0 -> maxOf(normalGateNm, 1.8)
+        else -> normalGateNm
+    }
+
+    fun runwayOccupancyMultiplier(visibilityKm: Double): Double = when {
+        visibilityKm < 3.0 -> 1.5
+        visibilityKm < 6.0 -> 1.25
+        else -> 1.0
+    }
 }
 
 sealed interface GameEvent {
@@ -336,6 +461,7 @@ sealed interface GameEvent {
         val aircraftId: String?,
         val reason: String,
         override val elapsedSeconds: Double,
+        val reasonCode: CommandRejectionReason = CommandRejectionReason.UNKNOWN,
     ) : GameEvent
 
     data class ConflictWarning(val conflict: Conflict, override val elapsedSeconds: Double) : GameEvent
@@ -364,6 +490,47 @@ sealed interface GameEvent {
         override val elapsedSeconds: Double,
     ) : GameEvent
 
+    data class RunwayAssigned(
+        val aircraftId: String,
+        val runwayId: String,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+    data class ApproachAssigned(
+        val aircraftId: String,
+        val runwayId: String?,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+    data class ClearanceCancelled(
+        val aircraftId: String,
+        val clearanceType: String,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+    data class RunwayOccupied(
+        val physicalRunwayId: String,
+        val runwayEndId: String,
+        val aircraftId: String,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+    data class RunwayVacated(
+        val physicalRunwayId: String,
+        val aircraftId: String,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+    data class WakeWarning(
+        val leaderAircraftId: String,
+        val followerAircraftId: String,
+        val requiredSeconds: Double,
+        val actualSeconds: Double,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+    data class WakeViolation(
+        val leaderAircraftId: String,
+        val followerAircraftId: String,
+        val requiredSeconds: Double,
+        val actualSeconds: Double,
+        override val elapsedSeconds: Double,
+    ) : GameEvent
+
     data class ScenarioCompleted(override val elapsedSeconds: Double) : GameEvent
     data class ScenarioFailed(val reason: FailureReason, override val elapsedSeconds: Double) : GameEvent
 }
@@ -374,12 +541,39 @@ sealed interface PlayerCommand {
     object Resume : PlayerCommand
     data class SetSimulationSpeed(val multiplier: Double) : PlayerCommand
     data class SetRoute(val aircraftId: String, val route: Route) : PlayerCommand
+    data class DirectTo(val aircraftId: String, val waypoint: Vec2) : PlayerCommand
+    data class AppendWaypoint(val aircraftId: String, val waypoint: Vec2) : PlayerCommand
+    data class UndoWaypoint(val aircraftId: String) : PlayerCommand
+    data class ClearRoute(val aircraftId: String) : PlayerCommand
     data class SetTargetAltitude(val aircraftId: String, val altitudeFeet: Double) : PlayerCommand
     data class SetTargetSpeed(val aircraftId: String, val speedKnots: Double) : PlayerCommand
     data class ClearToLand(val aircraftId: String, val runwayId: String) : PlayerCommand
     data class ClearForTakeoff(val aircraftId: String, val runwayId: String) : PlayerCommand
+    data class AssignRunway(val aircraftId: String, val runwayId: String) : PlayerCommand
+    data class AssignApproach(val aircraftId: String, val runwayId: String) : PlayerCommand
+    data class CancelApproach(val aircraftId: String) : PlayerCommand
+    data class LineUpAndWait(val aircraftId: String, val runwayId: String) : PlayerCommand
+    data class CancelLandingClearance(val aircraftId: String) : PlayerCommand
+    data class CancelTakeoffClearance(val aircraftId: String) : PlayerCommand
     data class GoAround(val aircraftId: String, val targetAltitudeFeet: Double = 3_000.0) : PlayerCommand
 }
+
+data class UpcomingAircraft(
+    val aircraftId: String,
+    val callsign: String,
+    val operation: FlightOperation,
+    val runwayId: String?,
+    val spawnAtSeconds: Double,
+)
+
+data class WakeSpacing(
+    val leaderAircraftId: String,
+    val followerAircraftId: String,
+    val runwayId: String,
+    val requiredSeconds: Double,
+    val actualSeconds: Double,
+    val violation: Boolean,
+)
 
 data class GameSnapshot(
     val scenarioId: String,
@@ -397,6 +591,13 @@ data class GameSnapshot(
     val pendingAircraftCount: Int,
     /** Events produced by the most recent engine operation. */
     val events: List<GameEvent>,
+    val eventHistory: List<GameEvent> = events,
+    val upcomingAircraft: List<UpcomingAircraft> = emptyList(),
+    val objectives: ScenarioObjectives = ScenarioObjectives(),
+    val maxDurationSeconds: Double = 0.0,
+    val weather: WeatherState = WeatherState(),
+    val mechanicVersions: MechanicVersions = MechanicVersions(),
+    val wakeSpacing: List<WakeSpacing> = emptyList(),
 )
 
 data class SimulationParameters(

@@ -2,7 +2,6 @@ package com.stuart.atccontroller.ui
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.dp
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -34,18 +33,15 @@ class LabelLayoutTest {
         manager.registerStaticLabel(113f, 58f, 70.dp, 48.dp)
 
         val anchor = Offset(100f, 100f)
-        val (_, quadrant) = manager.findBestPosition(
+        val (position, _) = manager.findBestPosition(
             anchor,
             widthDp = 70.dp,
             heightDp = 48.dp,
             scale = 1f,
         )
 
-        // It should NOT pick TOP_RIGHT because it overlaps the static label
-        assertFalse("Should not pick TOP_RIGHT", quadrant == LabelQuadrant.TOP_RIGHT)
-        
-        // It should pick another quadrant, e.g. BOTTOM_RIGHT
-        assertEquals("Should pick BOTTOM_RIGHT", LabelQuadrant.BOTTOM_RIGHT, quadrant)
+        val placed = LabelBounds(position.x, position.y, 70f, 48f)
+        assertFalse(placed.overlaps(LabelBounds(113f, 58f, 70f, 48f), margin = 4f))
     }
 
     @Test
@@ -69,5 +65,30 @@ class LabelLayoutTest {
         // It should be clamped to 200 - 70 - 2 = 128
         assertTrue("Should be clamped within width", pos.x <= 130f)
         assertTrue("Should be at least 2", pos.x >= 2f)
+    }
+
+    @Test
+    fun denseScaledLabelsStayWithinSafeInset() {
+        val manager = LabelLayoutManager(320f, 220f, 1f, safeInsetPx = 6f)
+        val anchors = listOf(
+            Offset(2f, 2f), Offset(318f, 2f), Offset(2f, 218f), Offset(318f, 218f),
+            Offset(155f, 105f), Offset(160f, 110f), Offset(165f, 115f),
+        )
+        anchors.forEach { anchor ->
+            val (position, _) = manager.findBestPosition(anchor, 70.dp, 48.dp, scale = 1.4f)
+            val bounds = LabelBounds(position.x, position.y, 98f, 67.2f)
+            assertTrue(bounds.inside(320f, 220f, 6f))
+        }
+    }
+
+    @Test
+    fun previousValidPositionGetsHysteresis() {
+        val previous = Offset(100f, 80f)
+        val manager = LabelLayoutManager(500f, 400f, 1f)
+        val (position, _) = manager.findBestPosition(
+            Offset(90f, 140f), 70.dp, 48.dp, 1f, previous = previous,
+        )
+        assertTrue(kotlin.math.abs(position.x - previous.x) < 1f)
+        assertTrue(kotlin.math.abs(position.y - previous.y) < 1f)
     }
 }

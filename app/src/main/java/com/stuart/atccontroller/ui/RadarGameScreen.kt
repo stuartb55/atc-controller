@@ -55,11 +55,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -70,6 +73,8 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -78,6 +83,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.stuart.atccontroller.R
@@ -95,12 +101,16 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().padding(if (compact) 8.dp else 12.dp)) {
                 GameStatusBar(state, compact, onAction)
+                state.replay?.let { replay ->
+                    Spacer(Modifier.height(5.dp))
+                    ReplayControls(replay, onAction)
+                }
                 Spacer(Modifier.height(if (compact) 7.dp else 10.dp))
                 if (stacked) {
                     RadarDisplay(
                         state = state,
                         onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
-                        onCommitRoute = { onAction(GameAction.CommitRoute(it)) },
+                        onCommitRoute = { points, target -> onAction(GameAction.CommitRoute(points, target)) },
                         onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
@@ -121,7 +131,7 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         RadarDisplay(
                             state = state,
                             onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
-                            onCommitRoute = { onAction(GameAction.CommitRoute(it)) },
+                            onCommitRoute = { points, target -> onAction(GameAction.CommitRoute(points, target)) },
                             onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
@@ -141,6 +151,53 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                 PauseOverlay(state, onAction)
             } else state.tutorialStep?.let { step ->
                 TutorialOverlay(step, onAction, compact)
+            }
+            if (state.abandonConfirmationVisible) {
+                AbandonConfirmationDialog(onAction)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReplayControls(replay: ReplayUiModel, onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = colors.panel,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, colors.cyan),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = { onAction(GameAction.ReplayTogglePlay) }) {
+                Text(
+                    stringResource(if (replay.isPlaying) R.string.replay_pause else R.string.replay_play),
+                    color = colors.cyan,
+                )
+            }
+            TextButton(onClick = { onAction(GameAction.ReplayStep) }) {
+                Text(stringResource(R.string.replay_step), color = colors.green)
+            }
+            TextButton(onClick = { onAction(GameAction.ReplaySeek(0)) }) {
+                Text("|‹", color = colors.muted)
+            }
+            TextButton(onClick = { onAction(GameAction.ReplaySeek(replay.terminalTick)) }) {
+                Text("›|", color = colors.muted)
+            }
+            Text(
+                stringResource(R.string.replay_progress, replay.tick, replay.terminalTick),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.white,
+                modifier = Modifier.weight(1f),
+            )
+            listOf(1, 2, 4).forEach { speed ->
+                TextButton(onClick = { onAction(GameAction.ReplaySetSpeed(speed)) }) {
+                    Text("${speed}×", color = if (replay.speed == speed) colors.cyan else colors.muted)
+                }
             }
         }
     }
@@ -313,15 +370,19 @@ private fun TimeControl(timeScale: Int, onAction: (GameAction) -> Unit) {
 private fun RadarDisplay(
     state: GameUiState,
     onSelectAircraft: (String?) -> Unit,
-    onCommitRoute: (List<NormalizedPoint>) -> Unit,
+    onCommitRoute: (List<NormalizedPoint>, RouteTerminalTarget?) -> Unit,
     onCycleConflict: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
     var draftRoute by remember(state.selectedAircraftId) { mutableStateOf<List<NormalizedPoint>>(emptyList()) }
+    var activeSnapTarget by remember(state.selectedAircraftId) { mutableStateOf<RadarSnapTarget?>(null) }
+    var draggingAircraftId by remember { mutableStateOf<String?>(null) }
+    val previousLabelPositions = remember { mutableMapOf<String, Offset>() }
     val latestAircraft by rememberUpdatedState(state.aircraft)
     val latestSelectedAircraft by rememberUpdatedState(state.selectedAircraft)
     val hitRadiusPx = with(LocalDensity.current) { 48.dp.toPx() }
+    val haptic = LocalHapticFeedback.current
     val radarDescription = stringResource(R.string.cd_terminal_radar)
     val directFix = state.selectedAircraft?.takeIf { it.phase == FlightPhase.DEPARTURE }?.let { selected ->
         state.fixes.minByOrNull { fix ->
@@ -353,7 +414,10 @@ private fun RadarDisplay(
                         if ((directFix != null) && (directActionLabel != null)) {
                             add(
                                 CustomAccessibilityAction(directActionLabel) {
-                                    onCommitRoute(listOf(directFix.position))
+                                    onCommitRoute(
+                                        listOf(directFix.position),
+                                        RouteTerminalTarget.NavigationFix(directFix.name),
+                                    )
                                     true
                                 },
                             )
@@ -376,8 +440,25 @@ private fun RadarDisplay(
             val plotWidthPx = with(LocalDensity.current) { plotWidth.toPx() }
             val plotHeightPx = with(LocalDensity.current) { plotHeight.toPx() }
 
-            val labelLayouts = remember(state.aircraft, state.fixes, state.visibleRunways, plotWidth, plotHeight, state.settings.labelScale) {
+            val labelLayouts = remember(state.aircraft, state.fixes, state.visibleRunways, state.conflicts, state.selectedAircraftId, plotWidth, plotHeight, state.settings.labelScale) {
                 val manager = LabelLayoutManager(plotWidthPx, plotHeightPx, density)
+
+                // Protect target glyphs and persistent overlays before considering any labels.
+                state.aircraft.forEach { aircraft ->
+                    val x = aircraft.position.x * plotWidthPx
+                    val y = aircraft.position.y * plotHeightPx
+                    manager.registerObstacle(
+                        LabelBounds(x - 18f * density, y - 18f * density, 36f * density, 36f * density),
+                    )
+                }
+                manager.registerObstacle(
+                    LabelBounds(8f * density, plotHeightPx - 48f * density, 180f * density, 40f * density),
+                )
+                if (state.conflicts.isNotEmpty()) {
+                    manager.registerObstacle(
+                        LabelBounds(plotWidthPx / 2f - 125f * density, 8f * density, 250f * density, 52f * density),
+                    )
+                }
                 
                 // Register runway labels first
                 state.visibleRunways.forEach { runway ->
@@ -400,6 +481,16 @@ private fun RadarDisplay(
                     val fy = (plotHeightPx * runway.center.y + (halfLength + badgeGap) * axisY - labelHeight / 2)
                         .coerceIn(2f * density, plotHeightPx - labelHeight - 2f * density)
                     manager.registerStaticLabel(fx, fy, 76.dp, 22.dp)
+                    val centerX = plotWidthPx * runway.center.x
+                    val centerY = plotHeightPx * runway.center.y
+                    manager.registerObstacle(
+                        LabelBounds(
+                            minOf(centerX - axisX * halfLength / 2f, centerX + axisX * halfLength / 2f) - 6f * density,
+                            minOf(centerY - axisY * halfLength / 2f, centerY + axisY * halfLength / 2f) - 6f * density,
+                            kotlin.math.abs(axisX * halfLength) + 12f * density,
+                            kotlin.math.abs(axisY * halfLength) + 12f * density,
+                        ),
+                    )
                 }
 
                 // Register fixes
@@ -410,16 +501,69 @@ private fun RadarDisplay(
                 }
 
                 // Layout aircraft labels
-                state.aircraft.associate { aircraft ->
+                state.aircraft.sortedWith(
+                    compareByDescending<AircraftUiModel> {
+                        it.id == state.selectedAircraftId || it.conflictLevel != ConflictLevel.NONE
+                    }.thenBy { it.id },
+                ).associate { aircraft ->
                     val anchor = Offset(aircraft.position.x * plotWidthPx, aircraft.position.y * plotHeightPx)
-                    aircraft.id to manager.findBestPosition(
+                    val position = manager.findBestPosition(
                         anchor,
                         widthDp = 70.dp,
                         heightDp = 48.dp,
                         scale = state.settings.labelScale,
+                        previous = previousLabelPositions[aircraft.id],
+                        priority = aircraft.id == state.selectedAircraftId ||
+                            aircraft.conflictLevel != ConflictLevel.NONE,
+                    )
+                    previousLabelPositions[aircraft.id] = position.first
+                    aircraft.id to position
+                }
+            }
+
+            val hitRegions = remember(state.aircraft, labelLayouts, plotWidthPx, plotHeightPx) {
+                state.aircraft.map { aircraft ->
+                    val aircraftX = aircraft.position.x * plotWidthPx
+                    val aircraftY = aircraft.position.y * plotHeightPx
+                    val label = labelLayouts[aircraft.id]?.first
+                    val labelWidth = 70f * density * maxOf(1f, state.settings.labelScale)
+                    val labelHeight = 48f * density * maxOf(1f, state.settings.labelScale)
+                    RadarHitRegion(
+                        aircraftId = aircraft.id,
+                        left = minOf(aircraftX - hitRadiusPx / 2f, label?.x ?: aircraftX),
+                        top = minOf(aircraftY - hitRadiusPx / 2f, label?.y ?: aircraftY),
+                        right = maxOf(aircraftX + hitRadiusPx / 2f, (label?.x ?: aircraftX) + labelWidth),
+                        bottom = maxOf(aircraftY + hitRadiusPx / 2f, (label?.y ?: aircraftY) + labelHeight),
                     )
                 }
             }
+            val latestHitRegions by rememberUpdatedState(hitRegions)
+            val snapTargets = remember(state.selectedAircraft, state.fixes) {
+                buildList {
+                    state.fixes.filter { it.kind != FixKind.APPROACH }.forEach { fix ->
+                        add(
+                            RadarSnapTarget(
+                                RouteTerminalTarget.NavigationFix(fix.name),
+                                fix.position,
+                                .065f,
+                            ),
+                        )
+                    }
+                    state.selectedAircraft?.assignedRunway?.let { runwayId ->
+                        state.fixes.firstOrNull { it.kind == FixKind.APPROACH && it.name == "I-$runwayId" }
+                            ?.let { gate ->
+                                add(
+                                    RadarSnapTarget(
+                                        RouteTerminalTarget.AssignedRunway(runwayId),
+                                        gate.position,
+                                        .085f,
+                                    ),
+                                )
+                            }
+                    }
+                }
+            }
+            val latestSnapTargets by rememberUpdatedState(snapTargets)
 
             Canvas(
                 modifier = Modifier
@@ -428,51 +572,70 @@ private fun RadarDisplay(
                     // Restarting it for every snapshot can cancel an in-progress tap or drag.
                     .pointerInput(hitRadiusPx) {
                         detectTapGestures { tap ->
-                            val nearest = latestAircraft.minByOrNull { aircraft ->
-                                val dx = tap.x - aircraft.position.x * size.width
-                                val dy = tap.y - aircraft.position.y * size.height
-                                dx * dx + dy * dy
-                            }
-                            val selected = nearest?.takeIf {
-                                val dx = tap.x - it.position.x * size.width
-                                val dy = tap.y - it.position.y * size.height
-                                dx * dx + dy * dy <= hitRadiusPx * hitRadiusPx
-                            }
-                            onSelectAircraft(selected?.id)
+                            onSelectAircraft(hitTestAircraft(tap.x, tap.y, latestHitRegions))
                         }
                     }
-                    .pointerInput(state.selectedAircraftId) {
+                    .pointerInput(Unit) {
                         detectDragGestures(
                             onDragStart = { start ->
-                                val selected = latestSelectedAircraft ?: return@detectDragGestures
+                                val aircraftId = hitTestAircraft(start.x, start.y, latestHitRegions)
+                                    ?: return@detectDragGestures
+                                val selected = latestAircraft.firstOrNull { it.id == aircraftId }
+                                    ?: return@detectDragGestures
+                                draggingAircraftId = aircraftId
+                                if (aircraftId != latestSelectedAircraft?.id) onSelectAircraft(aircraftId)
                                 draftRoute = listOf(
                                     selected.position,
                                     NormalizedPoint(start.x / size.width, start.y / size.height).clamped(),
                                 )
                             },
                             onDrag = { change, _ ->
-                                if (state.selectedAircraftId != null) {
+                                if (draggingAircraftId != null) {
                                     val next = NormalizedPoint(
                                         change.position.x / size.width,
                                         change.position.y / size.height,
                                     ).clamped()
+                                    val snap = selectSnapTarget(next, latestSnapTargets)
+                                    if (snap?.terminal != activeSnapTarget?.terminal) {
+                                        if (snap != null) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        activeSnapTarget = snap
+                                    }
+                                    val sampled = snap?.position ?: next
                                     val previous = draftRoute.lastOrNull()
-                                    if (previous == null || hypot((next.x - previous.x).toDouble(), (next.y - previous.y).toDouble()) > .018) {
-                                        draftRoute += next
+                                    if (previous == null || hypot((sampled.x - previous.x).toDouble(), (sampled.y - previous.y).toDouble()) > .009) {
+                                        draftRoute += sampled
                                     }
                                 }
                             },
                             onDragEnd = {
-                                if (draftRoute.size > 2) onCommitRoute(draftRoute.drop(1))
+                                val simplified = simplifyFingerPath(draftRoute.drop(1))
+                                if (isRouteGestureLongEnough(draftRoute)) {
+                                    onCommitRoute(simplified, activeSnapTarget?.terminal)
+                                }
                                 draftRoute = emptyList()
+                                activeSnapTarget = null
+                                draggingAircraftId = null
                             },
-                            onDragCancel = { draftRoute = emptyList() },
+                            onDragCancel = {
+                                draftRoute = emptyList()
+                                activeSnapTarget = null
+                                draggingAircraftId = null
+                            },
                         )
                     },
             ) {
                 drawRadarGrid(colors)
                 drawAirport(state.visibleRunways, colors)
                 drawFixes(state.fixes, colors)
+                snapTargets.forEach { target ->
+                    val active = target.terminal == activeSnapTarget?.terminal
+                    drawCircle(
+                        color = if (active) colors.cyan.copy(alpha = .22f) else colors.cyan.copy(alpha = .055f),
+                        radius = size.minDimension * target.radius,
+                        center = target.position.toOffset(size),
+                        style = Stroke(if (active) 3f else 1f),
+                    )
+                }
                 if (state.settings.trailsEnabled) drawTrails(state.aircraft, colors)
                 drawRoutes(state.aircraft, state.selectedAircraftId, colors)
                 if (draftRoute.isNotEmpty()) {
@@ -485,7 +648,14 @@ private fun RadarDisplay(
                     draftRoute.forEach { point -> drawCircle(colors.cyan, 3.2f, point.toOffset(size)) }
                 }
                 drawConflicts(state, colors)
-                drawAircraft(state.aircraft, state.selectedAircraftId, labelLayouts, colors)
+                drawAircraft(
+                    state.aircraft,
+                    state.selectedAircraftId,
+                    labelLayouts,
+                    colors,
+                    density,
+                    state.settings.labelScale,
+                )
             }
 
             state.fixes.forEach { fix ->
@@ -507,10 +677,6 @@ private fun RadarDisplay(
                     plotHeight = plotHeight,
                 )
             }
-
-            CompassReference(
-                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
-            )
 
             state.aircraft.forEach { aircraft ->
                 val layout = labelLayouts[aircraft.id] ?: (Offset.Zero to LabelQuadrant.TOP_RIGHT)
@@ -618,6 +784,52 @@ private fun DrawScope.drawRadarGrid(colors: AtcPalette) {
         topLeft = Offset(center.x - radiusStep * 5, center.y - radiusStep * 5),
         size = Size(radiusStep * 10, radiusStep * 10),
     )
+    drawHeadingPerimeter(colors)
+}
+
+private fun DrawScope.drawHeadingPerimeter(colors: AtcPalette) {
+    val center = Offset(size.width / 2f, size.height / 2f)
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = android.graphics.Typeface.MONOSPACE
+    }
+    for (heading in 0 until 360 step 10) {
+        val radians = Math.toRadians(heading.toDouble())
+        val direction = Offset(sin(radians).toFloat(), -cos(radians).toFloat())
+        val tx = if (direction.x > 0f) {
+            (size.width - center.x) / direction.x
+        } else if (direction.x < 0f) {
+            -center.x / direction.x
+        } else Float.POSITIVE_INFINITY
+        val ty = if (direction.y > 0f) {
+            (size.height - center.y) / direction.y
+        } else if (direction.y < 0f) {
+            -center.y / direction.y
+        } else Float.POSITIVE_INFINITY
+        val edge = center + direction * minOf(tx, ty)
+        val major = heading % 30 == 0
+        val length = if (major) 13f else 7f
+        drawLine(
+            colors.green.copy(alpha = if (major) .58f else .28f),
+            edge,
+            edge - direction * length,
+            if (major) 1.8f else 1f,
+        )
+        if (major) {
+            val text = when (heading) {
+                0 -> "N"
+                90 -> "E"
+                180 -> "S"
+                270 -> "W"
+                else -> String.format(Locale.UK, "%03d°", heading)
+            }
+            paint.color = colors.green.copy(alpha = .78f).toArgb()
+            paint.textSize = if (heading % 90 == 0) 10f else 8f
+            val position = edge - direction * (length + 8f)
+            drawContext.canvas.nativeCanvas.drawText(text, position.x, position.y + 3f, paint)
+        }
+    }
 }
 
 private fun DrawScope.drawAirport(runways: List<RunwayUiModel>, colors: AtcPalette) {
@@ -810,6 +1022,8 @@ private fun DrawScope.drawAircraft(
     selectedId: String?,
     labelLayouts: Map<String, Pair<Offset, LabelQuadrant>>,
     colors: AtcPalette,
+    density: Float,
+    labelScale: Float,
 ) {
     aircraft.forEach { item ->
         val p = item.position.toOffset(size)
@@ -819,8 +1033,13 @@ private fun DrawScope.drawAircraft(
             ConflictLevel.LOSS -> colors.red
         }
         if (item.id == selectedId) {
-            drawCircle(color.copy(alpha = .12f), 18f, p)
-            drawCircle(color.copy(alpha = .8f), 15f, p, style = Stroke(1.4f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 3f))))
+            drawCircle(color.copy(alpha = .16f), 25f * density, p)
+            drawCircle(
+                color.copy(alpha = .92f),
+                21f * density,
+                p,
+                style = Stroke(2f * density, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 4f))),
+            )
         }
         rotate(item.headingDegrees, pivot = p) {
             // A short leader ahead of the target makes the current track easier to compare with
@@ -845,13 +1064,17 @@ private fun DrawScope.drawAircraft(
         // Leader line to the data label
         val layout = labelLayouts[item.id]
         if (layout != null) {
-            val (connectorStart, connectorEnd) = when (layout.second) {
-                LabelQuadrant.TOP_RIGHT -> (p + Offset(8f, -8f)) to (p + Offset(13f, -13f))
-                LabelQuadrant.BOTTOM_RIGHT -> (p + Offset(8f, 8f)) to (p + Offset(13f, 13f))
-                LabelQuadrant.BOTTOM_LEFT -> (p + Offset(-8f, 8f)) to (p + Offset(-13f, 13f))
-                LabelQuadrant.TOP_LEFT -> (p + Offset(-8f, -8f)) to (p + Offset(-13f, -13f))
-            }
-            drawLine(color.copy(alpha = .6f), connectorStart, connectorEnd, 1f)
+            val labelWidth = 70f * density * maxOf(1f, labelScale)
+            val labelHeight = 48f * density * maxOf(1f, labelScale)
+            val connectorEnd = Offset(
+                p.x.coerceIn(layout.first.x, layout.first.x + labelWidth),
+                p.y.coerceIn(layout.first.y, layout.first.y + labelHeight),
+            )
+            val dx = connectorEnd.x - p.x
+            val dy = connectorEnd.y - p.y
+            val length = hypot(dx.toDouble(), dy.toDouble()).toFloat().coerceAtLeast(1f)
+            val connectorStart = p + Offset(dx / length * 10f, dy / length * 10f)
+            drawLine(color.copy(alpha = .62f), connectorStart, connectorEnd, 1.2f)
         }
     }
 }
@@ -889,13 +1112,14 @@ private fun AircraftDataLabel(
         modifier = modifier
             .minimumInteractiveComponentSize()
             .sizeIn(minWidth = 70.dp, minHeight = 48.dp)
-            .selectable(
-                selected = selected,
-                onClick = onClick,
-                role = Role.Button,
-            )
             .semantics {
+                role = Role.Button
+                this.selected = selected
                 contentDescription = aircraftDescription
+                onClick {
+                    onClick()
+                    true
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -1014,26 +1238,6 @@ private fun RunwayBadge(text: String, active: Boolean, modifier: Modifier = Modi
             textAlign = TextAlign.Center,
             maxLines = 1,
         )
-    }
-}
-
-@Composable
-private fun CompassReference(modifier: Modifier = Modifier) {
-    val colors = MaterialTheme.atcColors
-    Surface(
-        modifier = modifier,
-        color = colors.night.copy(alpha = .78f),
-        shape = RoundedCornerShape(6.dp),
-        border = BorderStroke(1.dp, colors.line.copy(alpha = .8f)),
-    ) {
-        Column(
-            Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(stringResource(R.string.compass_north), color = colors.green, fontFamily = FontFamily.Monospace, fontSize = 7.sp)
-            Text(stringResource(R.string.compass_east_west), color = colors.muted, fontFamily = FontFamily.Monospace, fontSize = 6.sp)
-            Text(stringResource(R.string.compass_south), color = colors.muted, fontFamily = FontFamily.Monospace, fontSize = 7.sp)
-        }
     }
 }
 
@@ -1220,30 +1424,58 @@ private fun CommandPanel(
     ) {
         val selected = state.selectedAircraft
         if (selected == null) {
-            EmptySelection(state.aircraft.size)
-        } else {
-            val directFix = state.fixes.takeIf { selected.phase == FlightPhase.DEPARTURE }?.minByOrNull { fix ->
-                hypot(
-                    (fix.position.x - selected.position.x).toDouble(),
-                    (fix.position.y - selected.position.y).toDouble(),
-                )
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                OperationsOverview(state)
+                FlightStripBoard(state, onAction)
+                EventFeed(state, onAction)
             }
+        } else {
+            val routeFixes = state.fixes.filter { it.kind != FixKind.APPROACH }
             Column(
                 Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(if (compact) 12.dp else 16.dp),
             ) {
+                OperationsOverview(state)
+                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                FlightStripBoard(state, onAction)
+                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 FlightStrip(selected) { onAction(GameAction.SelectAircraft(null)) }
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                directFix?.let { fix ->
+                if (routeFixes.isNotEmpty()) {
                     SectionLabel(stringResource(R.string.route_shortcut))
                     Spacer(Modifier.height(7.dp))
-                    SecondaryActionButton(
-                        text = stringResource(R.string.action_direct_to_fix, fix.name),
-                        onClick = { onAction(GameAction.CommitRoute(listOf(fix.position))) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    routeFixes.forEach { fix ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                            SecondaryActionButton(
+                                text = stringResource(R.string.direct_to, fix.name),
+                                onClick = { onAction(GameAction.DirectToFix(fix.name)) },
+                                modifier = Modifier.weight(1f),
+                            )
+                            SecondaryActionButton(
+                                text = stringResource(R.string.append_fix, fix.name),
+                                onClick = { onAction(GameAction.AppendFix(fix.name)) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(Modifier.height(5.dp))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        SecondaryActionButton(
+                            text = stringResource(R.string.undo_waypoint),
+                            onClick = { onAction(GameAction.UndoWaypoint) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        SecondaryActionButton(
+                            text = stringResource(R.string.clear_route),
+                            onClick = { onAction(GameAction.ClearRoute) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 }
                 SectionLabel(stringResource(R.string.vector_controls))
@@ -1264,7 +1496,27 @@ private fun CommandPanel(
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 SectionLabel(stringResource(R.string.clearance))
                 Spacer(Modifier.height(7.dp))
+                if (state.runwayProceduresEnabled) {
+                    state.visibleRunways.forEach { runway ->
+                        SecondaryActionButton(
+                            text = stringResource(R.string.assign_runway, runway.id),
+                            onClick = { onAction(GameAction.AssignRunway(runway.id)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(5.dp))
+                    }
+                }
                 if (selected.phase == FlightPhase.DEPARTURE) {
+                    if (state.runwayProceduresEnabled) {
+                        ClearanceButton(
+                            label = stringResource(R.string.line_up_wait),
+                            caption = selected.assignedRunway
+                                ?: state.visibleRunways.firstOrNull()?.id
+                                ?: stringResource(R.string.not_available_short),
+                            accent = colors.cyan,
+                        ) { onAction(GameAction.LineUpAndWait) }
+                        Spacer(Modifier.height(6.dp))
+                    }
                     ClearanceButton(
                         label = stringResource(R.string.clear_takeoff),
                         caption = selected.assignedRunway
@@ -1272,7 +1524,25 @@ private fun CommandPanel(
                             ?: stringResource(R.string.not_available_short),
                         accent = colors.green,
                     ) { onAction(GameAction.IssueClearance(ClearanceType.TAKE_OFF)) }
+                    if (state.runwayProceduresEnabled) {
+                        Spacer(Modifier.height(6.dp))
+                        SecondaryActionButton(
+                            text = stringResource(R.string.cancel_takeoff_clearance),
+                            onClick = { onAction(GameAction.CancelTakeoffClearance) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 } else {
+                    if (state.runwayProceduresEnabled) {
+                        state.visibleRunways.forEach { runway ->
+                            SecondaryActionButton(
+                                text = stringResource(R.string.assign_approach, runway.id),
+                                onClick = { onAction(GameAction.AssignApproach(runway.id)) },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(5.dp))
+                        }
+                    }
                     ClearanceButton(
                         label = stringResource(R.string.prepare_approach),
                         caption = stringResource(
@@ -1297,16 +1567,231 @@ private fun CommandPanel(
                         caption = stringResource(R.string.climb_feet, localizedInteger(3_000)),
                         accent = colors.amber,
                     ) { onAction(GameAction.IssueClearance(ClearanceType.GO_AROUND)) }
+                    Spacer(Modifier.height(6.dp))
+                    if (state.runwayProceduresEnabled) Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        SecondaryActionButton(
+                            text = stringResource(R.string.cancel_approach),
+                            onClick = { onAction(GameAction.CancelApproach) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        SecondaryActionButton(
+                            text = stringResource(R.string.cancel_landing_clearance),
+                            onClick = { onAction(GameAction.CancelLandingClearance) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 FuelStatus(selected.fuelPercent)
+                Spacer(Modifier.height(10.dp))
+                EventFeed(state, onAction)
                 Spacer(Modifier.height(9.dp))
                 TextButton(
-                    onClick = { onAction(GameAction.CompleteMission) },
+                    onClick = { onAction(GameAction.RequestAbandonment) },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp),
                     colors = ButtonDefaults.textButtonColors(contentColor = colors.muted),
                 ) {
-                    Text(stringResource(R.string.end_shift_debrief).uppercase(), style = MaterialTheme.typography.labelSmall)
+                    Text(stringResource(R.string.abandon_attempt).uppercase(), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OperationsOverview(state: GameUiState) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        color = colors.night.copy(alpha = .62f),
+        shape = RoundedCornerShape(11.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            SectionLabel(stringResource(R.string.live_operations))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    stringResource(R.string.movements_remaining, state.movementsRemaining),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.white,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    stringResource(
+                        R.string.mission_time_remaining,
+                        formatElapsed(state.missionTimeRemainingSeconds),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (state.missionOverdue) colors.red else colors.white,
+                )
+            }
+            Text(
+                stringResource(R.string.secured_stars, state.starForecast.securedStars),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.amber,
+            )
+            Text(
+                state.starForecast.pointsToNextStar?.let {
+                    stringResource(R.string.points_to_next_star, it)
+                } ?: stringResource(R.string.maximum_stars_secured),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
+            state.objectiveProgress.forEach { objective ->
+                Text(
+                    "${if (objective.passed) "✓" else "○"} ${objective.label} ${objective.current}/${objective.target}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (objective.passed) colors.green else colors.muted,
+                )
+            }
+            HorizontalDivider(color = colors.line)
+            SectionLabel(stringResource(R.string.upcoming_traffic))
+            if (state.upcomingTraffic.isEmpty()) {
+                Text(
+                    stringResource(R.string.no_more_scheduled_traffic),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                )
+            } else {
+                state.upcomingTraffic.forEach { traffic ->
+                    Text(
+                        stringResource(
+                            R.string.traffic_due,
+                            traffic.callsign,
+                            traffic.intent.lowercase().replaceFirstChar(Char::uppercase),
+                            traffic.secondsToEntry,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.white,
+                    )
+                }
+            }
+            Text(
+                stringResource(
+                    R.string.weather_impact,
+                    state.weatherImpact.wind,
+                    state.weatherImpact.visibility,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.cyan,
+            )
+            state.weatherImpact.crosswindByRunway.forEach { (runway, component) ->
+                Text(
+                    stringResource(R.string.crosswind_component, runway, component),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlightStripBoard(state: GameUiState, onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SectionLabel(stringResource(R.string.flight_strips))
+        state.flightStrips.forEach { strip ->
+            val accent = when (strip.conflictLevel) {
+                ConflictLevel.NONE -> if (strip.fuelPercent < 25) colors.amber else colors.greenDim
+                ConflictLevel.PREDICTED -> colors.amber
+                ConflictLevel.LOSS -> colors.red
+            }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .semantics {
+                        role = Role.Button
+                        selected = strip.aircraftId == state.selectedAircraftId
+                        contentDescription = "${strip.callsign}, ${strip.phase}, fuel ${strip.fuelPercent} percent"
+                    }
+                    .clickable { onAction(GameAction.SelectFlightStrip(strip.aircraftId)) },
+                color = if (strip.aircraftId == state.selectedAircraftId) {
+                    colors.selectedDataLabel
+                } else {
+                    colors.night.copy(alpha = .55f)
+                },
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, accent),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(strip.callsign, style = MaterialTheme.typography.labelMedium, color = colors.white)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${strip.runwayId ?: "—"} · ${strip.fuelPercent}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = accent,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EventFeed(state: GameUiState, onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SectionLabel(stringResource(R.string.event_feed))
+        state.eventFeed.takeLast(5).asReversed().forEach { entry ->
+            val accent = when (entry.severity) {
+                EventFeedSeverity.ROUTINE -> colors.muted
+                EventFeedSeverity.SUCCESS -> colors.green
+                EventFeedSeverity.WARNING -> colors.amber
+                EventFeedSeverity.CRITICAL -> colors.red
+            }
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(enabled = entry.aircraftIds.isNotEmpty()) {
+                        onAction(GameAction.SelectEvent(entry.sequence))
+                    },
+                color = colors.night.copy(alpha = .5f),
+                shape = RoundedCornerShape(7.dp),
+            ) {
+                Row(Modifier.padding(7.dp), verticalAlignment = Alignment.Top) {
+                    Text(formatElapsed(entry.elapsedSeconds), style = MaterialTheme.typography.labelSmall, color = colors.muted)
+                    Spacer(Modifier.width(7.dp))
+                    Text(entry.caption, style = MaterialTheme.typography.labelSmall, color = accent)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AbandonConfirmationDialog(onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    Dialog(
+        onDismissRequest = { onAction(GameAction.CancelAbandonment) },
+        properties = DialogProperties(dismissOnClickOutside = false),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = colors.panel,
+            border = BorderStroke(1.dp, colors.amber.copy(alpha = .7f)),
+        ) {
+            Column(Modifier.padding(22.dp)) {
+                Text(stringResource(R.string.abandon_attempt), style = MaterialTheme.typography.titleLarge, color = colors.white)
+                Spacer(Modifier.height(9.dp))
+                Text(stringResource(R.string.abandon_attempt_explanation), style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+                Spacer(Modifier.height(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    SecondaryActionButton(
+                        stringResource(R.string.cancel),
+                        { onAction(GameAction.CancelAbandonment) },
+                        Modifier.weight(1f),
+                    )
+                    PrimaryActionButton(
+                        stringResource(R.string.abandon),
+                        { onAction(GameAction.ConfirmAbandonment) },
+                        Modifier.weight(1f),
+                        suffix = "",
+                    )
                 }
             }
         }
@@ -1545,18 +2030,10 @@ private fun TutorialOverlay(step: Int, onAction: (GameAction) -> Unit, compact: 
     val colors = MaterialTheme.atcColors
     val copy = tutorialCopy[step.coerceIn(tutorialCopy.indices)]
     val paneDescription = stringResource(R.string.pane_tutorial_step, step + 1, tutorialCopy.size)
-    Dialog(
-        onDismissRequest = {},
-        properties = DialogProperties(
-            dismissOnBackPress = false,
-            dismissOnClickOutside = false,
-            usePlatformDefaultWidth = false,
-        ),
-    ) {
+    Box(Modifier.fillMaxSize()) {
         Box(
             Modifier
                 .fillMaxSize()
-                .background(colors.night.copy(alpha = .62f))
                 .semantics { paneTitle = paneDescription },
         ) {
             Surface(
@@ -1578,6 +2055,8 @@ private fun TutorialOverlay(step: Int, onAction: (GameAction) -> Unit, compact: 
                     Spacer(Modifier.height(5.dp))
                     Text(stringResource(copy.title), style = MaterialTheme.typography.titleLarge, color = colors.white)
                     Text(stringResource(copy.body), style = MaterialTheme.typography.bodyMedium, color = colors.muted, maxLines = if (compact) 2 else 3)
+                    Text(stringResource(R.string.training_action_gate), style = MaterialTheme.typography.labelSmall, color = colors.cyan)
+                    Text(stringResource(R.string.training_disclaimer), style = MaterialTheme.typography.labelSmall, color = colors.muted)
                     Spacer(Modifier.height(13.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1594,12 +2073,6 @@ private fun TutorialOverlay(step: Int, onAction: (GameAction) -> Unit, compact: 
                         TextButton(onClick = { onAction(GameAction.DismissTutorial) }) {
                             Text(stringResource(R.string.skip).uppercase(), style = MaterialTheme.typography.labelSmall, color = colors.muted)
                         }
-                        Spacer(Modifier.width(4.dp))
-                        PrimaryActionButton(
-                            text = if (step == tutorialCopy.lastIndex) stringResource(R.string.take_control) else stringResource(R.string.next),
-                            onClick = { if (step == tutorialCopy.lastIndex) onAction(GameAction.DismissTutorial) else onAction(GameAction.AdvanceTutorial) },
-                            modifier = Modifier.width(if (step == tutorialCopy.lastIndex) 152.dp else 104.dp),
-                        )
                     }
                 }
             }

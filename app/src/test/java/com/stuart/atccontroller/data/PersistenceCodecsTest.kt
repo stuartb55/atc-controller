@@ -7,6 +7,47 @@ import org.junit.Test
 
 class PersistenceCodecsTest {
     @Test
+    fun trainingStateCodecRetainsLessonProgressAndRejectsUnknownVersion() {
+        val state = TrainingState(
+            activeLessonId = "PARALLEL_RUNWAYS",
+            activeStep = 3,
+            completedLessonIds = setOf("ALTITUDE", "SPEED"),
+        )
+
+        assertEquals(state, TrainingStateCodec.decode(TrainingStateCodec.encode(state)))
+        assertEquals(TrainingState(), TrainingStateCodec.decode("99:bad:2:"))
+    }
+
+    @Test
+    fun completedReplayCodecIsBoundedAndIgnoresMalformedRecords() {
+        val records = (0..7).map { index ->
+            CompletedReplayRecord(
+                schemaVersion = 2,
+                id = "replay-$index",
+                scenarioId = "scenario",
+                savedAtEpochMillis = index.toLong(),
+                terminalTick = 100L + index,
+                finalScore = index,
+                terminalHash = "hash-$index",
+                payload = "payload-$index",
+            )
+        }
+
+        val decoded = CompletedReplayCodec.decode(CompletedReplayCodec.encode(records) + "\nmalformed")
+
+        assertEquals(5, decoded.size)
+        assertEquals(records.take(5), decoded)
+    }
+
+    @Test
+    fun recordedCompletionRepairsMissingNextMissionUnlock() {
+        val first = ManchesterContent.FIRST_MISSION_ID
+        val next = ManchesterContent.nextMissionId(first)!!
+        val repaired = reconciledMissionUnlocks(emptySet(), setOf(first))
+        assertTrue(first in repaired)
+        assertTrue(next in repaired)
+    }
+    @Test
     fun missionStarsRoundTripIdentifiersAndSortDeterministically() {
         val stars = mapOf(
             "mission:two/β" to 2,

@@ -3,6 +3,7 @@ package com.stuart.atccontroller.data
 import com.stuart.atccontroller.simulation.AircraftState
 import com.stuart.atccontroller.simulation.AircraftType
 import com.stuart.atccontroller.simulation.Navigation
+import com.stuart.atccontroller.simulation.MechanicVersions
 import com.stuart.atccontroller.simulation.Route
 import com.stuart.atccontroller.simulation.RunwayState
 import com.stuart.atccontroller.simulation.ScenarioDefinition as SimulationScenarioDefinition
@@ -10,6 +11,7 @@ import com.stuart.atccontroller.simulation.ScenarioObjectives
 import com.stuart.atccontroller.simulation.ScenarioScoringRules
 import com.stuart.atccontroller.simulation.ScheduledAircraft
 import com.stuart.atccontroller.simulation.Vec2
+import com.stuart.atccontroller.simulation.WeatherState
 
 /** Converts authored content into the immutable contract consumed by the simulation engine. */
 fun ScenarioDefinition.toSimulationScenario(
@@ -33,6 +35,7 @@ fun ScenarioDefinition.toSimulationScenario(
                 threshold = definition.threshold.toVec2(),
                 end = reciprocal.threshold.toVec2(),
                 headingDegrees = definition.headingDegrees.toDouble(),
+                physicalRunwayId = definition.physicalRunwayId,
             )
         }
     val runwayStates = runways.associateBy(RunwayState::id)
@@ -130,11 +133,24 @@ fun ScenarioDefinition.toSimulationScenario(
             automaticGoAroundPenaltyPoints = scoring.avoidableGoAroundPenalty,
             manualGoAroundPenaltyPoints = scoring.manualGoAroundPenalty,
             missedExitPenaltyPoints = scoring.missedExitPenalty,
+            runwayProcedurePenaltyPoints = scoring.runwayProcedurePenalty,
+            wakeViolationPenaltyPoints = scoring.wakeViolationPenalty,
         ),
         mapWidthNm = airport.mapWidthNm,
         mapHeightNm = airport.mapHeightNm,
         maxDurationSeconds = maxDurationSeconds.toDouble(),
         maxStrikes = maxStrikes,
+        weather = WeatherState(
+            windDirectionDegrees = weather.windDirectionDegrees.toDouble(),
+            windSpeedKnots = weather.windSpeedKnots.toDouble(),
+            visibilityKm = weather.visibilityKm.toDouble(),
+        ),
+        mechanicVersions = MechanicVersions(
+            runwayProcedures = mechanicVersions.runwayProcedures,
+            wakeTurbulence = mechanicVersions.wakeTurbulence,
+            windDrift = mechanicVersions.windDrift,
+            reducedVisibility = mechanicVersions.reducedVisibility,
+        ),
     )
 }
 
