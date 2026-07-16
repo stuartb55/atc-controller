@@ -1594,11 +1594,30 @@ private fun CommandPanel(
                         Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                         FlightStripBoard(state, onAction)
                     }
-                    if (!paged || page == CommandPanelPage.CONTROL) {
-                FlightStrip(selected) { onAction(GameAction.SelectAircraft(null)) }
-                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                    if (!paged || page in setOf(CommandPanelPage.CONTROL, CommandPanelPage.ROUTE)) {
+                        FlightStrip(
+                            aircraft = selected,
+                            compact = paged,
+                            onDeselect = { onAction(GameAction.SelectAircraft(null)) },
+                        )
+                        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                    }
+                    if (!paged || page == CommandPanelPage.ROUTE) {
                 if (routeFixes.isNotEmpty()) {
                     SectionLabel(stringResource(R.string.route_shortcut))
+                    Spacer(Modifier.height(7.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        SecondaryActionButton(
+                            text = stringResource(R.string.undo_waypoint),
+                            onClick = { onAction(GameAction.UndoWaypoint) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        SecondaryActionButton(
+                            text = stringResource(R.string.clear_route),
+                            onClick = { onAction(GameAction.ClearRoute) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     Spacer(Modifier.height(7.dp))
                     routeFixes.forEach { fix ->
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1615,20 +1634,10 @@ private fun CommandPanel(
                         }
                         Spacer(Modifier.height(5.dp))
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        SecondaryActionButton(
-                            text = stringResource(R.string.undo_waypoint),
-                            onClick = { onAction(GameAction.UndoWaypoint) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        SecondaryActionButton(
-                            text = stringResource(R.string.clear_route),
-                            onClick = { onAction(GameAction.ClearRoute) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
                     Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 }
+                    }
+                    if (!paged || page == CommandPanelPage.CONTROL) {
                 SectionLabel(stringResource(R.string.vector_controls))
                 Spacer(Modifier.height(7.dp))
                 StepControl(
@@ -1840,7 +1849,7 @@ private fun CommandPanel(
     }
 }
 
-private enum class CommandPanelPage { OVERVIEW, CONTROL, EVENTS }
+private enum class CommandPanelPage { OVERVIEW, CONTROL, ROUTE, EVENTS }
 
 @Composable
 private fun CommandPanelNavigation(
@@ -1852,6 +1861,7 @@ private fun CommandPanelNavigation(
     val pages = listOf(
         CommandPanelPage.OVERVIEW to stringResource(R.string.panel_overview),
         CommandPanelPage.CONTROL to stringResource(R.string.panel_control),
+        CommandPanelPage.ROUTE to stringResource(R.string.panel_route),
         CommandPanelPage.EVENTS to stringResource(R.string.panel_events),
     )
     Row(
@@ -1861,7 +1871,8 @@ private fun CommandPanelNavigation(
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         pages.forEach { (page, label) ->
-            val enabled = page != CommandPanelPage.CONTROL || aircraftSelected
+            val enabled = page !in setOf(CommandPanelPage.CONTROL, CommandPanelPage.ROUTE) ||
+                aircraftSelected
             val selected = page == selectedPage
             Box(
                 modifier = Modifier
@@ -2310,7 +2321,11 @@ private fun EmptySelection(aircraftCount: Int) {
 }
 
 @Composable
-private fun FlightStrip(aircraft: AircraftUiModel, onDeselect: () -> Unit) {
+private fun FlightStrip(
+    aircraft: AircraftUiModel,
+    compact: Boolean = false,
+    onDeselect: () -> Unit,
+) {
     val colors = MaterialTheme.atcColors
     val closeDescription = stringResource(R.string.cd_close_aircraft_strip)
     Surface(
@@ -2318,6 +2333,49 @@ private fun FlightStrip(aircraft: AircraftUiModel, onDeselect: () -> Unit) {
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, colors.greenDim),
     ) {
+        if (compact) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TinyPlane(
+                    color = if (aircraft.phase == FlightPhase.DEPARTURE) colors.cyan else colors.green,
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        aircraft.callsign,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = colors.white,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    Text(
+                        stringResource(
+                            R.string.compact_aircraft_summary,
+                            aircraft.altitudeFeet / 100,
+                            aircraft.speedKnots,
+                            normalizedHeading(aircraft.headingDegrees),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                    )
+                }
+                Surface(
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .size(48.dp)
+                        .clickable(onClick = onDeselect)
+                        .semantics { contentDescription = closeDescription },
+                    shape = CircleShape,
+                    color = colors.panel,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("×", color = colors.muted, fontSize = 16.sp)
+                    }
+                }
+            }
+            return@Surface
+        }
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TinyPlane(color = if (aircraft.phase == FlightPhase.DEPARTURE) colors.cyan else colors.green)

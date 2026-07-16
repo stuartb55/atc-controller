@@ -76,6 +76,7 @@ class AtcControllerAppTest {
         composeRule.onNode(exsLabel).performSemanticsAction(SemanticsActions.OnClick)
         composeRule.runOnIdle { assertEquals("EXS72M", viewModel.uiState.selectedAircraftId) }
         composeRule.onNode(exsLabel).assertIsSelected()
+        composeRule.onNodeWithText("ROUTE").performClick().assertIsSelected()
         composeRule
             .onNode(hasText("DIRECT MIRSI", ignoreCase = true) and hasClickAction())
             .performScrollTo()
@@ -156,6 +157,11 @@ class AtcControllerAppTest {
             .onNode(hasContentDescription("NORTH 201, heading", substring = true))
             .performSemanticsAction(SemanticsActions.OnClick)
         composeRule.onNodeWithText("CONTROL").assertIsSelected()
+        composeRule.onNodeWithText("TARGET ALTITUDE").assertIsDisplayed()
+        composeRule.onNodeWithText("ROUTE SHORTCUT").assertDoesNotExist()
+        composeRule.onNodeWithText("ROUTE").performClick().assertIsSelected()
+        composeRule.onNodeWithText("ROUTE SHORTCUT").assertIsDisplayed()
+        composeRule.onNodeWithText("VECTOR CONTROLS").assertDoesNotExist()
         composeRule.onNodeWithText("EVENTS").performClick().assertIsSelected()
         composeRule.onNodeWithText("RADIO / EVENT FEED").assertIsDisplayed()
     }

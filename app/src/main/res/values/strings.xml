@@ -291,7 +291,9 @@
     <string name="live_operations">Live operations</string>
     <string name="panel_overview">Overview</string>
     <string name="panel_control">Control</string>
+    <string name="panel_route">Route</string>
     <string name="panel_events">Events</string>
+    <string name="compact_aircraft_summary">FL%1$d · %2$d kt · HDG %3$03d°</string>
     <plurals name="movements_remaining">
         <item quantity="one">%1$d movement remaining</item>
         <item quantity="other">%1$d movements remaining</item>
