@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -180,19 +181,62 @@ fun DataPill(
         color = colors.panelRaised.copy(alpha = .88f),
         border = BorderStroke(1.dp, colors.line),
     ) {
-        Row(
-            Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(Modifier.size(6.dp).background(resolvedAccent, CircleShape))
-            Text(label.uppercase(), style = MaterialTheme.typography.labelSmall, color = colors.muted)
-            Text(
-                value,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontFamily = FontFamily.Monospace,
-            )
+        BoxWithConstraints {
+            val stacked = maxWidth < 150.dp
+            if (stacked) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Box(Modifier.size(6.dp).background(resolvedAccent, CircleShape))
+                        Text(
+                            label.uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        value,
+                        modifier = Modifier.padding(start = 13.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            } else {
+                Row(
+                    Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(6.dp).background(resolvedAccent, CircleShape))
+                    Text(
+                        label.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        value,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }
@@ -211,7 +255,12 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun StarRating(stars: Int, modifier: Modifier = Modifier, compact: Boolean = false) {
+fun StarRating(
+    stars: Int,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    color: Color? = null,
+) {
     val colors = MaterialTheme.atcColors
     val description = pluralStringResource(R.plurals.cd_star_rating, stars, stars)
     Text(
@@ -219,7 +268,7 @@ fun StarRating(stars: Int, modifier: Modifier = Modifier, compact: Boolean = fal
             repeat(3) { index -> append(if (index < stars) "★" else "☆") }
         },
         modifier = modifier.semantics { contentDescription = description },
-        color = colors.amber,
+        color = color ?: colors.amber,
         fontSize = if (compact) 12.sp else 18.sp,
         letterSpacing = if (compact) 1.sp else 3.sp,
     )

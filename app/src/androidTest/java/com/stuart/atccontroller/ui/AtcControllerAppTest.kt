@@ -62,6 +62,42 @@ class AtcControllerAppTest {
     }
 
     @Test
+    fun portraitHomeKeepsOperationalValuesOnOneLine() {
+        val viewModel = TestGameController()
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 800.dp)) {
+                    AtcControllerApp(viewModel.uiState, viewModel::onAction)
+                }
+            }
+        }
+
+        listOf("23R", "240/08", "20 km").forEach { value ->
+            val bounds = composeRule.onNodeWithText(value).fetchSemanticsNode().boundsInRoot
+            assertTrue("Operational value wrapped vertically: $value at $bounds", bounds.width > bounds.height)
+        }
+    }
+
+    @Test
+    fun portraitBriefingKeepsWindVisibilityAndDurationOnOneLine() {
+        val viewModel = TestGameController()
+        viewModel.onAction(GameAction.Navigate(AppScreen.MISSIONS))
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 800.dp)) {
+                    AtcControllerApp(viewModel.uiState, viewModel::onAction)
+                }
+            }
+        }
+
+        listOf("240°/08kt", "20 km", "7:55").forEach { value ->
+            val node = composeRule.onNodeWithText(value).performScrollTo().assertIsDisplayed()
+            val bounds = node.fetchSemanticsNode().boundsInRoot
+            assertTrue("Briefing value wrapped vertically: $value at $bounds", bounds.width > bounds.height)
+        }
+    }
+
+    @Test
     fun gameExposesAccessibleAircraftAndPauseControls() {
         val viewModel = TestGameController()
         viewModel.onAction(GameAction.StartSelectedMission)

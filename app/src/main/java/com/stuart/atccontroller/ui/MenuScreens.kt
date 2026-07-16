@@ -930,7 +930,11 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
             }
             if (!mission.locked || mission.completed) {
                 mission.bestStars?.let { stars ->
-                    StarRating(stars, compact = true)
+                    StarRating(
+                        stars = stars,
+                        compact = true,
+                        color = if (selected) colors.night else null,
+                    )
                 }
             }
         }
