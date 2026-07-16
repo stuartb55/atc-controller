@@ -39,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -46,7 +47,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -94,6 +96,12 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
+private val AircraftLabelWidth = 104.dp
+private val AircraftLabelHeight = 48.dp
+private val FixLabelWidth = 96.dp
+private val FixLabelHeight = 18.dp
+private val RadarContentInset = 6.dp
+
 @Composable
 fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -120,6 +128,7 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         state = state,
                         onAction = onAction,
                         compact = true,
+                        paged = true,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 220.dp, max = 300.dp),
@@ -140,6 +149,7 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                             state = state,
                             onAction = onAction,
                             compact = compact,
+                            paged = false,
                             modifier = Modifier
                                 .width(if (compact) 228.dp else 290.dp)
                                 .fillMaxHeight(),
@@ -540,38 +550,49 @@ private fun RadarDisplay(
                     val axisX = sin(radians).toFloat()
                     val axisY = -cos(radians).toFloat()
                     val halfLength = minOf(plotWidthPx, plotHeightPx) * .145f
-                    val badgeGap = 16f * density
                     val labelWidth = 76f * density
                     val labelHeight = 22f * density
-
-                    val tx = (plotWidthPx * runway.center.x - (halfLength + badgeGap) * axisX - labelWidth / 2)
-                        .coerceIn(2f * density, plotWidthPx - labelWidth - 2f * density)
-                    val ty = (plotHeightPx * runway.center.y - (halfLength + badgeGap) * axisY - labelHeight / 2)
-                        .coerceIn(2f * density, plotHeightPx - labelHeight - 2f * density)
-                    manager.registerStaticLabel(tx, ty, 76.dp, 22.dp)
-
-                    val fx = (plotWidthPx * runway.center.x + (halfLength + badgeGap) * axisX - labelWidth / 2)
-                        .coerceIn(2f * density, plotWidthPx - labelWidth - 2f * density)
-                    val fy = (plotHeightPx * runway.center.y + (halfLength + badgeGap) * axisY - labelHeight / 2)
-                        .coerceIn(2f * density, plotHeightPx - labelHeight - 2f * density)
-                    manager.registerStaticLabel(fx, fy, 76.dp, 22.dp)
+                    val (thresholdLabel, farEndLabel) = runwayEndLabelPositions(
+                        plotWidth = plotWidthPx,
+                        plotHeight = plotHeightPx,
+                        center = runway.center,
+                        headingDegrees = runway.headingDegrees,
+                        labelWidth = labelWidth,
+                        labelHeight = labelHeight,
+                        gap = 8f * density,
+                        inset = RadarContentInset.value * density,
+                    )
+                    manager.registerStaticLabel(thresholdLabel.x, thresholdLabel.y, 76.dp, 22.dp)
+                    manager.registerStaticLabel(farEndLabel.x, farEndLabel.y, 76.dp, 22.dp)
                     val centerX = plotWidthPx * runway.center.x
                     val centerY = plotHeightPx * runway.center.y
                     manager.registerObstacle(
                         LabelBounds(
-                            minOf(centerX - axisX * halfLength / 2f, centerX + axisX * halfLength / 2f) - 6f * density,
-                            minOf(centerY - axisY * halfLength / 2f, centerY + axisY * halfLength / 2f) - 6f * density,
-                            kotlin.math.abs(axisX * halfLength) + 12f * density,
-                            kotlin.math.abs(axisY * halfLength) + 12f * density,
+                            minOf(centerX - axisX * halfLength, centerX + axisX * halfLength) - 6f * density,
+                            minOf(centerY - axisY * halfLength, centerY + axisY * halfLength) - 6f * density,
+                            kotlin.math.abs(axisX * halfLength * 2f) + 12f * density,
+                            kotlin.math.abs(axisY * halfLength * 2f) + 12f * density,
                         ),
                     )
                 }
 
                 // Register fixes
                 state.fixes.forEach { fix ->
-                    val x = (plotWidthPx * fix.position.x + 7 * density).coerceIn(2 * density, plotWidthPx - 48 * density)
-                    val y = (plotHeightPx * fix.position.y - 8 * density).coerceIn(2 * density, plotHeightPx - 18 * density)
-                    manager.registerStaticLabel(x, y, 32.dp, 12.dp)
+                    val position = boundedMapLabelPosition(
+                        anchorPx = fix.position.toOffset(Size(plotWidthPx, plotHeightPx)),
+                        plotWidthPx = plotWidthPx,
+                        plotHeightPx = plotHeightPx,
+                        labelWidthPx = FixLabelWidth.value * density,
+                        labelHeightPx = FixLabelHeight.value * density,
+                        gapPx = 7f * density,
+                        insetPx = RadarContentInset.value * density,
+                    )
+                    manager.registerStaticLabel(
+                        position.x,
+                        position.y,
+                        FixLabelWidth,
+                        FixLabelHeight,
+                    )
                 }
 
                 // Layout aircraft labels
@@ -583,8 +604,8 @@ private fun RadarDisplay(
                     val anchor = Offset(aircraft.position.x * plotWidthPx, aircraft.position.y * plotHeightPx)
                     val position = manager.findBestPosition(
                         anchor,
-                        widthDp = 70.dp,
-                        heightDp = 48.dp,
+                        widthDp = AircraftLabelWidth,
+                        heightDp = AircraftLabelHeight,
                         scale = state.settings.labelScale,
                         previous = previousLabelPositions[aircraft.id],
                         priority = aircraft.id == state.selectedAircraftId ||
@@ -600,8 +621,10 @@ private fun RadarDisplay(
                     val aircraftX = aircraft.position.x * plotWidthPx
                     val aircraftY = aircraft.position.y * plotHeightPx
                     val label = labelLayouts[aircraft.id]?.first
-                    val labelWidth = 70f * density * maxOf(1f, state.settings.labelScale)
-                    val labelHeight = 48f * density * maxOf(1f, state.settings.labelScale)
+                    val labelWidth = AircraftLabelWidth.value * density *
+                        maxOf(1f, state.settings.labelScale)
+                    val labelHeight = AircraftLabelHeight.value * density *
+                        maxOf(1f, state.settings.labelScale)
                     RadarHitRegion(
                         aircraftId = aircraft.id,
                         left = minOf(aircraftX - hitRadiusPx / 2f, label?.x ?: aircraftX),
@@ -741,14 +764,28 @@ private fun RadarDisplay(
             }
 
             state.fixes.forEach { fix ->
-                val x = (plotWidth * fix.position.x + 7.dp).coerceIn(2.dp, plotWidth - 48.dp)
-                val y = (plotHeight * fix.position.y - 8.dp).coerceIn(2.dp, plotHeight - 18.dp)
+                val position = boundedMapLabelPosition(
+                    anchorPx = Offset(
+                        plotWidth.value * fix.position.x,
+                        plotHeight.value * fix.position.y,
+                    ),
+                    plotWidthPx = plotWidth.value,
+                    plotHeightPx = plotHeight.value,
+                    labelWidthPx = FixLabelWidth.value,
+                    labelHeightPx = FixLabelHeight.value,
+                    gapPx = 7f,
+                    insetPx = RadarContentInset.value,
+                )
                 Text(
                     text = fix.name,
-                    modifier = Modifier.offset(x, y),
+                    modifier = Modifier
+                        .offset(position.x.dp, position.y.dp)
+                        .width(FixLabelWidth),
                     style = MaterialTheme.typography.labelSmall,
                     color = if (fix.kind == FixKind.APPROACH) colors.cyan else colors.greenDim,
                     fontSize = 8.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
 
@@ -1146,8 +1183,8 @@ private fun DrawScope.drawAircraft(
         // Leader line to the data label
         val layout = labelLayouts[item.id]
         if (layout != null) {
-            val labelWidth = 70f * density * maxOf(1f, labelScale)
-            val labelHeight = 48f * density * maxOf(1f, labelScale)
+            val labelWidth = AircraftLabelWidth.value * density * maxOf(1f, labelScale)
+            val labelHeight = AircraftLabelHeight.value * density * maxOf(1f, labelScale)
             val connectorEnd = Offset(
                 p.x.coerceIn(layout.first.x, layout.first.x + labelWidth),
                 p.y.coerceIn(layout.first.y, layout.first.y + labelHeight),
@@ -1193,7 +1230,7 @@ private fun AircraftDataLabel(
     Box(
         modifier = modifier
             .minimumInteractiveComponentSize()
-            .sizeIn(minWidth = 70.dp, minHeight = 48.dp)
+            .size(AircraftLabelWidth, AircraftLabelHeight)
             .semantics {
                 role = Role.Button
                 this.selected = selected
@@ -1207,7 +1244,12 @@ private fun AircraftDataLabel(
     ) {
         Surface(
             modifier = Modifier
-                .scale(scale)
+                .width(AircraftLabelWidth)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    transformOrigin = TransformOrigin(0f, 0f)
+                }
                 .shadow(if (selected) 8.dp else 0.dp, RoundedCornerShape(5.dp)),
             shape = RoundedCornerShape(5.dp),
             color = if (selected) colors.selectedDataLabel else colors.dataLabel,
@@ -1224,11 +1266,14 @@ private fun AircraftDataLabel(
                         ConflictLevel.LOSS -> Text("◆", color = accent, fontSize = 9.sp)
                         ConflictLevel.NONE -> Unit
                     }
-                    Text(aircraft.callsign, style = MaterialTheme.typography.labelMedium, color = accent, maxLines = 1)
-                    if (!decluttered) {
-                        Spacer(Modifier.weight(1f))
-                        Text(aircraft.type, style = MaterialTheme.typography.labelSmall, color = colors.muted)
-                    }
+                    Text(
+                        aircraft.callsign,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (!decluttered) {
                     Text(
@@ -1267,23 +1312,18 @@ private fun RunwayEndLabels(
     plotWidth: Dp,
     plotHeight: Dp,
 ) {
-    val radians = Math.toRadians(runway.headingDegrees.toDouble())
-    val axisX = sin(radians).toFloat()
-    val axisY = -cos(radians).toFloat()
-    val halfLength = minOf(plotWidth, plotHeight) * .145f
-    val badgeGap = 16.dp
     val labelWidth = 76.dp
     val labelHeight = 22.dp
-
-    // The model's threshold is the start of travel along the runway heading.
-    val thresholdX = (plotWidth * runway.center.x - (halfLength + badgeGap) * axisX - labelWidth / 2)
-        .coerceIn(2.dp, (plotWidth - labelWidth - 2.dp).coerceAtLeast(2.dp))
-    val thresholdY = (plotHeight * runway.center.y - (halfLength + badgeGap) * axisY - labelHeight / 2)
-        .coerceIn(2.dp, (plotHeight - labelHeight - 2.dp).coerceAtLeast(2.dp))
-    val farEndX = (plotWidth * runway.center.x + (halfLength + badgeGap) * axisX - labelWidth / 2)
-        .coerceIn(2.dp, (plotWidth - labelWidth - 2.dp).coerceAtLeast(2.dp))
-    val farEndY = (plotHeight * runway.center.y + (halfLength + badgeGap) * axisY - labelHeight / 2)
-        .coerceIn(2.dp, (plotHeight - labelHeight - 2.dp).coerceAtLeast(2.dp))
+    val (threshold, farEnd) = runwayEndLabelPositions(
+        plotWidth = plotWidth.value,
+        plotHeight = plotHeight.value,
+        center = runway.center,
+        headingDegrees = runway.headingDegrees,
+        labelWidth = labelWidth.value,
+        labelHeight = labelHeight.value,
+        gap = 8f,
+        inset = RadarContentInset.value,
+    )
 
     RunwayBadge(
         text = stringResource(
@@ -1292,12 +1332,12 @@ private fun RunwayEndLabels(
             normalizedHeading(runway.headingDegrees),
         ),
         active = true,
-        modifier = Modifier.offset(thresholdX, thresholdY),
+        modifier = Modifier.offset(threshold.x.dp, threshold.y.dp),
     )
     RunwayBadge(
         text = reciprocalRunwayId(runway.id),
         active = false,
-        modifier = Modifier.offset(farEndX, farEndY),
+        modifier = Modifier.offset(farEnd.x.dp, farEnd.y.dp),
     )
 }
 
@@ -1495,6 +1535,7 @@ private fun CommandPanel(
     state: GameUiState,
     onAction: (GameAction) -> Unit,
     compact: Boolean,
+    paged: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
@@ -1505,29 +1546,55 @@ private fun CommandPanel(
         border = BorderStroke(1.dp, colors.line),
     ) {
         val selected = state.selectedAircraft
+        var page by remember(selected?.id, paged) {
+            mutableStateOf(
+                if (selected == null) CommandPanelPage.OVERVIEW else CommandPanelPage.CONTROL,
+            )
+        }
         if (selected == null) {
-            Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OperationsOverview(state)
-                DynamicEventPanel(state, onAction)
-                FlightStripBoard(state, onAction)
-                EventFeed(state, onAction)
+            Column(Modifier.fillMaxSize()) {
+                if (paged) {
+                    CommandPanelNavigation(page, aircraftSelected = false) { page = it }
+                }
+                key(page) {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (!paged || page == CommandPanelPage.OVERVIEW) {
+                            OperationsOverview(state)
+                            DynamicEventPanel(state, onAction)
+                            FlightStripBoard(state, onAction)
+                        }
+                        if (!paged || page == CommandPanelPage.EVENTS) {
+                            EventFeed(state, onAction)
+                        }
+                    }
+                }
             }
         } else {
             val routeFixes = state.fixes.filter { it.kind != FixKind.APPROACH }
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(if (compact) 12.dp else 16.dp),
-            ) {
-                OperationsOverview(state)
-                DynamicEventPanel(state, onAction)
-                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                FlightStripBoard(state, onAction)
-                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+            Column(Modifier.fillMaxSize()) {
+                if (paged) {
+                    CommandPanelNavigation(page, aircraftSelected = true) { page = it }
+                }
+                key(page) {
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState())
+                            .padding(if (compact) 12.dp else 16.dp),
+                    ) {
+                    if (!paged || page == CommandPanelPage.OVERVIEW) {
+                        OperationsOverview(state)
+                        DynamicEventPanel(state, onAction)
+                        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
+                        FlightStripBoard(state, onAction)
+                    }
+                    if (!paged || page == CommandPanelPage.CONTROL) {
                 FlightStrip(selected) { onAction(GameAction.SelectAircraft(null)) }
                 Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 if (routeFixes.isNotEmpty()) {
@@ -1751,9 +1818,13 @@ private fun CommandPanel(
                     Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
                 }
                 FuelStatus(selected.fuelPercent)
-                Spacer(Modifier.height(10.dp))
-                EventFeed(state, onAction)
-                Spacer(Modifier.height(9.dp))
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    if (!paged || page == CommandPanelPage.EVENTS) {
+                        EventFeed(state, onAction)
+                        Spacer(Modifier.height(9.dp))
+                    }
+                    if (!paged || page == CommandPanelPage.CONTROL) {
                 TextButton(
                     onClick = { onAction(GameAction.RequestAbandonment) },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp),
@@ -1761,9 +1832,65 @@ private fun CommandPanel(
                 ) {
                     Text(stringResource(R.string.abandon_attempt).uppercase(), style = MaterialTheme.typography.labelSmall)
                 }
+                    }
+                    }
+                }
             }
         }
     }
+}
+
+private enum class CommandPanelPage { OVERVIEW, CONTROL, EVENTS }
+
+@Composable
+private fun CommandPanelNavigation(
+    selectedPage: CommandPanelPage,
+    aircraftSelected: Boolean,
+    onSelectPage: (CommandPanelPage) -> Unit,
+) {
+    val colors = MaterialTheme.atcColors
+    val pages = listOf(
+        CommandPanelPage.OVERVIEW to stringResource(R.string.panel_overview),
+        CommandPanelPage.CONTROL to stringResource(R.string.panel_control),
+        CommandPanelPage.EVENTS to stringResource(R.string.panel_events),
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        pages.forEach { (page, label) ->
+            val enabled = page != CommandPanelPage.CONTROL || aircraftSelected
+            val selected = page == selectedPage
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (selected) colors.green.copy(alpha = .16f) else Color.Transparent)
+                    .selectable(
+                        selected = selected,
+                        enabled = enabled,
+                        role = Role.Tab,
+                        onClick = { onSelectPage(page) },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        !enabled -> colors.muted.copy(alpha = .45f)
+                        selected -> colors.green
+                        else -> colors.muted
+                    },
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+    HorizontalDivider(color = colors.line)
 }
 
 @Composable

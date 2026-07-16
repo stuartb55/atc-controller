@@ -2,7 +2,10 @@ package com.stuart.atccontroller.ui
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Dp
+import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.sin
+import kotlin.math.cos
 
 internal data class LabelBounds(val x: Float, val y: Float, val width: Float, val height: Float) {
     val right: Float get() = x + width
@@ -23,6 +26,63 @@ internal data class LabelBounds(val x: Float, val y: Float, val width: Float, va
 }
 
 internal enum class LabelQuadrant { TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT, TOP_LEFT }
+
+/** Places a map annotation beside its anchor while keeping the full label inside the radar. */
+internal fun boundedMapLabelPosition(
+    anchorPx: Offset,
+    plotWidthPx: Float,
+    plotHeightPx: Float,
+    labelWidthPx: Float,
+    labelHeightPx: Float,
+    gapPx: Float,
+    insetPx: Float,
+): Offset {
+    val roomOnRight = anchorPx.x + gapPx + labelWidthPx <= plotWidthPx - insetPx
+    val desiredX = if (roomOnRight) {
+        anchorPx.x + gapPx
+    } else {
+        anchorPx.x - gapPx - labelWidthPx
+    }
+    return Offset(
+        desiredX.coerceIn(insetPx, maxOf(insetPx, plotWidthPx - labelWidthPx - insetPx)),
+        (anchorPx.y - labelHeightPx / 2f)
+            .coerceIn(insetPx, maxOf(insetPx, plotHeightPx - labelHeightPx - insetPx)),
+    )
+}
+
+/**
+ * Positions runway badges beyond the full projected end of the runway. Accounting for the
+ * axis-aligned badge's projected half-size prevents diagonal runways from running under it.
+ */
+internal fun runwayEndLabelPositions(
+    plotWidth: Float,
+    plotHeight: Float,
+    center: NormalizedPoint,
+    headingDegrees: Float,
+    labelWidth: Float,
+    labelHeight: Float,
+    gap: Float,
+    inset: Float,
+): Pair<Offset, Offset> {
+    val radians = Math.toRadians(headingDegrees.toDouble())
+    val axisX = sin(radians).toFloat()
+    val axisY = -cos(radians).toFloat()
+    val runwayHalfLength = minOf(plotWidth, plotHeight) * .145f
+    val labelHalfExtentAlongRunway =
+        abs(axisX) * labelWidth / 2f + abs(axisY) * labelHeight / 2f
+    val distance = runwayHalfLength + labelHalfExtentAlongRunway + gap
+    val centerX = plotWidth * center.x
+    val centerY = plotHeight * center.y
+
+    fun position(direction: Float) = Offset(
+        (centerX + direction * distance * axisX - labelWidth / 2f)
+            .coerceIn(inset, maxOf(inset, plotWidth - labelWidth - inset)),
+        (centerY + direction * distance * axisY - labelHeight / 2f)
+            .coerceIn(inset, maxOf(inset, plotHeight - labelHeight - inset)),
+    )
+
+    return position(-1f) to position(1f)
+}
 
 private data class LayoutObstacle(val bounds: LabelBounds, val protected: Boolean)
 

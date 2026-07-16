@@ -289,6 +289,9 @@
     <string name="failure_time_expired">time expired</string>
     <string name="failure_unknown">shift failed</string>
     <string name="live_operations">Live operations</string>
+    <string name="panel_overview">Overview</string>
+    <string name="panel_control">Control</string>
+    <string name="panel_events">Events</string>
     <plurals name="movements_remaining">
         <item quantity="one">%1$d movement remaining</item>
         <item quantity="other">%1$d movements remaining</item>

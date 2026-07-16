@@ -24,6 +24,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -76,7 +77,7 @@ class AtcControllerAppTest {
         composeRule.runOnIdle { assertEquals("EXS72M", viewModel.uiState.selectedAircraftId) }
         composeRule.onNode(exsLabel).assertIsSelected()
         composeRule
-            .onNode(hasText("DIRECT", substring = true, ignoreCase = true) and hasClickAction())
+            .onNode(hasText("DIRECT MIRSI", ignoreCase = true) and hasClickAction())
             .performScrollTo()
             .assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Pause simulation").performClick()
@@ -103,6 +104,60 @@ class AtcControllerAppTest {
         composeRule.onNodeWithText("800 points to next star").assertIsDisplayed()
         composeRule.onNodeWithText("○ Safe movements 1/3").assertIsDisplayed()
         composeRule.onNodeWithText("JET 42 · Arrival · 12s").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun portraitRadarKeepsAircraftAndFixLabelsInsideItsVisibleBounds() {
+        val viewModel = TestGameController()
+        viewModel.onAction(GameAction.StartSelectedMission)
+        viewModel.onAction(GameAction.DismissTutorial)
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 800.dp)) {
+                    AtcControllerApp(viewModel.uiState, viewModel::onAction)
+                }
+            }
+        }
+
+        val radar = composeRule
+            .onNodeWithContentDescription("Terminal radar", substring = true)
+            .fetchSemanticsNode().boundsInRoot
+        val labels = listOf(
+            composeRule.onNode(hasContentDescription("EXS72M, heading", substring = true)),
+            composeRule.onNode(hasContentDescription("CLOUD 314, heading", substring = true)),
+            composeRule.onNode(hasContentDescription("NORTH 201, heading", substring = true)),
+            composeRule.onNodeWithText("North-east Gate"),
+        )
+
+        labels.forEach { label ->
+            val bounds = label.fetchSemanticsNode().boundsInRoot
+            assertTrue("Label starts left of radar: $bounds vs $radar", bounds.left >= radar.left)
+            assertTrue("Label ends right of radar: $bounds vs $radar", bounds.right <= radar.right)
+            assertTrue("Label starts above radar: $bounds vs $radar", bounds.top >= radar.top)
+            assertTrue("Label ends below radar: $bounds vs $radar", bounds.bottom <= radar.bottom)
+        }
+    }
+
+    @Test
+    fun portraitPanelUsesDirectOverviewControlAndEventNavigation() {
+        val viewModel = TestGameController()
+        viewModel.onAction(GameAction.StartSelectedMission)
+        viewModel.onAction(GameAction.DismissTutorial)
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 800.dp)) {
+                    AtcControllerApp(viewModel.uiState, viewModel::onAction)
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("OVERVIEW").assertIsSelected()
+        composeRule
+            .onNode(hasContentDescription("NORTH 201, heading", substring = true))
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeRule.onNodeWithText("CONTROL").assertIsSelected()
+        composeRule.onNodeWithText("EVENTS").performClick().assertIsSelected()
+        composeRule.onNodeWithText("RADIO / EVENT FEED").assertIsDisplayed()
     }
 
     @Test
@@ -254,7 +309,7 @@ private fun testGameUiState() = GameUiState(
             id = "NORTH201",
             callsign = "NORTH 201",
             type = "E145",
-            position = NormalizedPoint(.62f, .42f),
+            position = NormalizedPoint(.98f, .42f),
             headingDegrees = 180f,
             altitudeFeet = 5_000,
             targetAltitudeFeet = 5_000,
@@ -288,6 +343,7 @@ private fun testGameUiState() = GameUiState(
     fixes = listOf(
         FixUiModel("MIRSI", NormalizedPoint(.10f, .18f)),
         FixUiModel("I-23R", NormalizedPoint(.73f, .73f), FixKind.APPROACH),
+        FixUiModel("North-east Gate", NormalizedPoint(.99f, .25f)),
     ),
     objectiveProgress = listOf(
         ObjectiveProgressUiModel(
