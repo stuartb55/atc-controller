@@ -1,5 +1,7 @@
 package com.stuart.atccontroller.ui
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -16,29 +18,39 @@ class RadarInteractionTest {
     }
 
     @Test
-    fun shortDragIsRejected() {
-        assertFalse(isRouteGestureLongEnough(listOf(NormalizedPoint(.2f, .2f), NormalizedPoint(.21f, .21f))))
-        assertTrue(isRouteGestureLongEnough(listOf(NormalizedPoint(.2f, .2f), NormalizedPoint(.3f, .3f))))
-    }
-
-    @Test
-    fun simplificationKeepsShapeAndEndpoints() {
-        val points = listOf(
-            NormalizedPoint(0f, 0f), NormalizedPoint(.1f, .001f),
-            NormalizedPoint(.2f, 0f), NormalizedPoint(.2f, .2f),
+    fun panAndZoomTransformRoundTripsRadarCoordinates() {
+        val size = Size(400f, 300f)
+        val viewport = updateRadarViewport(
+            current = RadarViewport(),
+            centroid = Offset(200f, 150f),
+            pan = Offset(-30f, 20f),
+            zoomChange = 2f,
+            viewportSize = size,
         )
-        val simplified = simplifyFingerPath(points, .01f)
-        assertEquals(points.first(), simplified.first())
-        assertEquals(points.last(), simplified.last())
-        assertEquals(3, simplified.size)
+        val mapPoint = Offset(100f, 90f)
+
+        val screenPoint = mapToScreen(mapPoint, viewport, size)
+
+        assertEquals(mapPoint.x, screenToMap(screenPoint, viewport, size).x, .001f)
+        assertEquals(mapPoint.y, screenToMap(screenPoint, viewport, size).y, .001f)
+        assertEquals(2f, viewport.scale, 0f)
     }
 
     @Test
-    fun nearestEnteredSnapZoneWins() {
-        val fix = RadarSnapTarget(RouteTerminalTarget.NavigationFix("FIX"), NormalizedPoint(.5f, .5f), .1f)
-        val runway = RadarSnapTarget(RouteTerminalTarget.AssignedRunway("23R"), NormalizedPoint(.55f, .5f), .1f)
-        assertEquals(runway, selectSnapTarget(NormalizedPoint(.56f, .5f), listOf(fix, runway)))
-        assertNull(selectSnapTarget(NormalizedPoint(.9f, .9f), listOf(fix, runway)))
+    fun viewportPanIsClampedAndZoomingOutResetsIt() {
+        val size = Size(320f, 220f)
+        val zoomed = updateRadarViewport(
+            RadarViewport(),
+            Offset(160f, 110f),
+            Offset(10_000f, -10_000f),
+            3f,
+            size,
+        )
+        assertTrue(zoomed.offset.x <= 320f)
+        assertTrue(zoomed.offset.y >= -220f)
+
+        val reset = updateRadarViewport(zoomed, Offset(160f, 110f), Offset.Zero, .01f, size)
+        assertEquals(RadarViewport(), reset)
     }
 
     @Test

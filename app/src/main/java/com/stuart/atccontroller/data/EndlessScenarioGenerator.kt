@@ -20,7 +20,9 @@ object EndlessScenarioGenerator {
         val pack = requireNotNull(ContentRegistry.pack(contentPackId)) {
             "Unknown content pack $contentPackId"
         }
-        val entryFixIds = pack.airport.fixes.map { it.id }
+        val entryFixIds = pack.airport.fixes
+            .filter { it.use == FixUse.ENTRY_AND_EXIT }
+            .map { it.id }
 
         val intensity = min(stage, 100)
         val scenarioSeed = seed xor (stage.toLong() * -7046029254386353131L)

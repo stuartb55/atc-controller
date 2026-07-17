@@ -114,8 +114,8 @@ object ScenarioValidator {
                     val entryFix = traffic.entryFixId?.let(fixes::get)
                     if (entryFix == null) {
                         issue("invalid_entry_fix", "$path.entryFixId", "must reference an airport entry fix")
-                    } else if (entryFix.use == FixUse.EXIT) {
-                        issue("invalid_entry_fix_use", "$path.entryFixId", "fix is exit-only")
+                    } else if (entryFix.use == FixUse.EXIT || entryFix.use == FixUse.WAYPOINT) {
+                        issue("invalid_entry_fix_use", "$path.entryFixId", "fix is not an entry boundary")
                     }
                     if (traffic.exitFixId != null) {
                         issue("arrival_has_exit", "$path.exitFixId", "must be null for an arrival")
@@ -135,8 +135,8 @@ object ScenarioValidator {
                     val exitFix = traffic.exitFixId?.let(fixes::get)
                     if (exitFix == null) {
                         issue("invalid_exit_fix", "$path.exitFixId", "must reference an airport exit fix")
-                    } else if (exitFix.use == FixUse.ENTRY) {
-                        issue("invalid_exit_fix_use", "$path.exitFixId", "fix is entry-only")
+                    } else if (exitFix.use == FixUse.ENTRY || exitFix.use == FixUse.WAYPOINT) {
+                        issue("invalid_exit_fix_use", "$path.exitFixId", "fix is not an exit boundary")
                     }
                     if (traffic.entryFixId != null) {
                         issue("departure_has_entry", "$path.entryFixId", "must be null for a departure")

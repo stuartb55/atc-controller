@@ -56,7 +56,10 @@ class ManchesterContentTest {
         assertEquals("2026-04-16", airport.source.effectiveDateIso)
         assertTrue(airport.source.sourceUrl.contains("aurora.nats.co.uk"))
         assertTrue(airport.source.disclaimer.contains("Not for navigation"))
-        assertTrue(airport.fixes.all { it.isFictional })
+        assertTrue(airport.fixes.none { it.isFictional })
+        assertTrue(setOf("MIRSI", "ROSUN", "DAYNE", "MCT", "POL", "TNT")
+            .all { name -> airport.fixes.any { it.displayName == name } })
+        assertTrue(airport.fixes.any { it.use == FixUse.WAYPOINT })
         assertTrue(ScenarioValidator.validateAirport(airport).isEmpty())
     }
 

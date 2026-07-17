@@ -7,11 +7,11 @@
         <item quantity="one">%1$d out of 3 stars</item>
         <item quantity="other">%1$d out of 3 stars</item>
     </plurals>
-    <string name="cd_terminal_radar">Terminal radar. Select an aircraft, then drag to draw a route or use the route shortcut in its command panel.</string>
+    <string name="cd_terminal_radar">Terminal radar. Tap an aircraft to select it. Drag to move the map and pinch to zoom.</string>
     <string name="cd_aircraft_target">%1$s, heading %2$03d°, altitude %3$s feet, speed %4$s knots, %5$s</string>
     <string name="action_direct_to_fix">Direct %1$s</string>
     <string name="action_select_aircraft">Select %1$s</string>
-    <string name="route_shortcut">Route shortcut</string>
+    <string name="route_shortcut">Named waypoints</string>
     <string name="pane_simulation_paused">Simulation paused</string>
     <string name="pane_tutorial_step">Tutorial step %1$d of %2$d</string>
     <string name="status_restoring_shift">Restoring saved shift…</string>
@@ -98,8 +98,6 @@
     <string name="high_contrast_summary">Brighter labels and boundaries</string>
     <string name="label_decluttering">Declutter labels</string>
     <string name="label_decluttering_summary">Use compact callsign labels until traffic needs attention</string>
-    <string name="route_snapping">Snap drawn routes</string>
-    <string name="route_snapping_summary">Magnetically finish a drawn route at a nearby named fix or assigned final</string>
     <string name="pause_on_focus_loss">Pause on focus loss</string>
     <string name="pause_on_focus_loss_summary">Pause for transient interruptions; backgrounding always saves and pauses</string>
     <string name="label_size">Label size</string>
@@ -111,10 +109,10 @@
     <string name="about_heading">BUILT FOR THE\nLOVE OF THE SECTOR</string>
     <string name="about_summary">A focused, offline strategy game about calm decisions in crowded skies.</string>
     <string name="version_snapshot">VERSION 1.0 • DATA SNAPSHOT 2026–04–16</string>
-    <string name="about_entertainment_title">Entertainment, not training</string>
+    <string name="about_entertainment_title">Game use only</string>
     <string name="about_entertainment_body">This game uses simplified aircraft performance, separation, airspace and procedures. It must not be used for navigation, operational decisions or air traffic control training.</string>
     <string name="about_data_title">Airport &amp; data</string>
-    <string name="about_data_body">Manchester is inspired by EGCC and adapted from a dated UK AIP snapshot. Harbour Approach is an original fictional crossing-runway sector. Both layouts and labels are deliberately simplified and incomplete.</string>
+    <string name="about_data_body">Manchester draws on the EGCC runway layout and named fixes in a dated UK AIP snapshot. Harbour Approach is an original crossing-runway sector.</string>
     <string name="about_privacy_title">Privacy</string>
     <string name="about_privacy_body">Progress and settings are stored locally and may transfer using Android device transfer. The game has no accounts, advertising, analytics or app network access.</string>
     <string name="about_disclaimer">Manchester Airport, NATS and airline names or marks are not affiliated with or endorsements of this game. Aircraft callsigns are fictional.</string>
@@ -143,7 +141,11 @@
     <string name="cd_simulation_speed">Simulation speed %1$d×</string>
     <string name="simulation_speed_value">%1$d×</string>
     <string name="radar_hint_select">Tap an aircraft to control</string>
-    <string name="radar_hint_route">Drag on radar or use Direct to revise route</string>
+    <string name="radar_hint_route">Issue heading, level, speed or named waypoint commands</string>
+    <string name="zoom_in">Zoom in</string>
+    <string name="zoom_out">Zoom out</string>
+    <string name="reset_map">Reset map</string>
+    <string name="map_zoom_value">%1$d%%</string>
     <plurals name="cd_conflict_warning">
         <item quantity="one">Conflict warning between %1$s and %2$s in %3$d second</item>
         <item quantity="other">Conflict warning between %1$s and %2$s in %3$d seconds</item>
@@ -158,12 +160,13 @@
     <string name="conflict_time_short">T−%1$ds</string>
     <string name="separation_lost_short">LOST</string>
     <string name="vector_controls">Vector controls</string>
+    <string name="target_heading">Assigned heading</string>
+    <string name="heading_step">5° increments</string>
     <string name="target_altitude">Target altitude</string>
     <string name="flight_level_value">%1$d FL</string>
     <string name="flight_level_code">FL%1$02d</string>
     <string name="aircraft_data_line">%1$s %2$s  %3$d kt  HDG %4$03d°</string>
     <string name="aircraft_heading_compact">HDG %1$03d°</string>
-    <string name="runway_heading_label">%1$s  %2$03d°</string>
     <string name="aircraft_type_phase">%1$s • %2$s</string>
     <string name="feet_value">%1$s ft</string>
     <string name="target_speed">Target speed</string>
@@ -516,6 +519,7 @@
     <string name="rejection_aircraft_ineligible">Wait for an eligible flight phase before trying again.</string>
     <string name="rejection_invalid_altitude">Choose an altitude between 0 and 50,000 feet.</string>
     <string name="rejection_invalid_speed">Choose a speed within this aircraft’s limits.</string>
+    <string name="rejection_invalid_heading">Choose a valid heading from 000° to 359°.</string>
     <string name="rejection_invalid_route">Use a valid route within the waypoint limit.</string>
     <string name="rejection_unknown_runway">Choose a runway available in this mission.</string>
     <string name="rejection_runway_inactive">Choose an active runway.</string>
@@ -573,12 +577,11 @@
     <string name="weather_change_notice">Runway change to %1$s in %2$ds</string>
     <string name="weather_display_only">Conditions are advisory in this mission and do not affect the simulation.</string>
     <string name="training_action_gate">Use the focusable game control to complete this action. Valid actions advance automatically.</string>
-    <string name="training_disclaimer">Simplified entertainment only — not operational aviation training.</string>
     <string name="practice_lesson">Practice focused lesson</string>
     <string name="training_title_format">%1$s Academy</string>
     <string name="training_aircraft_fallback">the highlighted aircraft</string>
     <string name="training_prompt_select">Select %1$s using its radar target or flight strip.</string>
-    <string name="training_prompt_route">Give %1$s a route using a named Direct control or the radar route gesture.</string>
+    <string name="training_prompt_route">Give %1$s a route using a named Direct control.</string>
     <string name="training_prompt_altitude">Use the focusable altitude control to change %1$s’s target altitude.</string>
     <string name="training_prompt_speed">Use the focusable speed control to change %1$s’s target speed.</string>
     <string name="training_prompt_prepare_approach">Use Set up approach for %1$s.</string>

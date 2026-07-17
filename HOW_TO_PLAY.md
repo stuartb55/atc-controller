@@ -38,15 +38,18 @@ Use this reliable sequence:
 
 Do not tap **End shift & debrief** to try to finish the mission. That is an early-exit control. If
 two arrivals look close, keep one at least 1,000 ft above the other until their paths separate, or
-draw a longer route for the following aircraft before setting up its final approach.
+send the following aircraft via another named waypoint before setting up its final approach.
 
 ## Radar and command controls
 
 - **Select aircraft:** Tap the aircraft symbol or its callsign label. Tap × in the command panel to
   close the strip.
-- **Draw a route:** Select an aircraft, then drag across the radar. The route is committed when you
-  lift your finger. Use deliberate, widely spaced turns; aircraft turn gradually rather than
-  pivoting instantly.
+- **Heading − / +:** Assigns a controller vector in 5° steps and cancels the aircraft’s current
+  waypoint route. Aircraft turn at a rate appropriate to their performance class.
+- **Named waypoints:** Use **Direct** for a new route or **Append** to build a sequence of published
+  fixes. **Undo waypoint** removes the last instruction and **Clear route** cancels the sequence.
+- **Move and zoom the radar:** Drag the chart to pan, pinch to zoom, or use the zoom controls in the
+  lower-right corner. Tapping the zoom percentage resets the view.
 - **Set up approach:** For an arrival, creates a flyable final route to its assigned runway and sets
   safe landing altitude and speed targets. You still decide when to clear it to land.
 - **Altitude − / +:** Changes target altitude in 500 ft steps. The aircraft climbs or descends
@@ -71,9 +74,10 @@ draw a longer route for the following aircraft before setting up its final appro
 - **Pause:** Stops simulation time. On supported layouts, the command panel remains available after
   resuming.
 
-The small triangle markers around the edge are fictional entry/exit fixes. Cyan `I-runway` markers
-and the dashed line show the approach direction. Aircraft labels show callsign, altitude/flight
-level, trend and speed; label detail can be adjusted in Settings.
+Manchester’s triangle markers use real named terminal and SID fixes such as MIRSI, ROSUN, DAYNE,
+MCT and POL. Cyan fixes are controller-addressable waypoints; dimmer fixes are also sector entry or
+exit boundaries. The dashed line shows the approach direction. Aircraft labels show callsign,
+altitude/flight level, trend and speed; label detail can be adjusted in Settings.
 
 ## Separation, warnings and failure
 

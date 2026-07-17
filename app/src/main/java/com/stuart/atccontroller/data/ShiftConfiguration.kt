@@ -165,11 +165,12 @@ object CustomShiftGenerator {
             configuration.contentPackId,
         )
         val ends = pack.runwayEnds(configuration.runwayDirection)
+        val boundaryFixes = airport.fixes.filter { it.use == FixUse.ENTRY_AND_EXIT }
         val traffic = base.traffic.mapIndexed { index, original ->
             val arrival = ((index * 37 + floorMod(configuration.seed, 100L).toInt()) % 100) <
                 configuration.arrivalPercent
             val fix = original.entryFixId ?: original.exitFixId
-                ?: airport.fixes[index % airport.fixes.size].id
+                ?: boundaryFixes[index % boundaryFixes.size].id
             original.copy(
                 id = "custom_${configuration.seed.toULong().toString(16)}_$index",
                 intent = if (arrival) TrafficIntent.ARRIVAL else TrafficIntent.DEPARTURE,

@@ -126,6 +126,8 @@ data class AircraftState(
     val position: Vec2,
     /** Aviation heading: 0 is north, 90 east. */
     val headingDegrees: Double,
+    /** Last controller-assigned vector. Null while the aircraft is navigating a named route. */
+    val assignedHeadingDegrees: Double? = null,
     val altitudeFeet: Double,
     val speedKnots: Double,
     val targetAltitudeFeet: Double = altitudeFeet,
@@ -155,6 +157,9 @@ data class AircraftState(
         require(id.isNotBlank()) { "Aircraft id must not be blank" }
         require(callsign.isNotBlank()) { "Callsign must not be blank" }
         require(headingDegrees.isFinite()) { "Heading must be finite" }
+        require(assignedHeadingDegrees == null || assignedHeadingDegrees.isFinite()) {
+            "Assigned heading must be finite"
+        }
         require(altitudeFeet >= 0.0 && altitudeFeet.isFinite()) { "Altitude must be non-negative" }
         require(speedKnots >= 0.0 && speedKnots.isFinite()) { "Speed must be non-negative" }
         require(targetAltitudeFeet >= 0.0 && targetAltitudeFeet.isFinite()) {
@@ -466,6 +471,7 @@ enum class CommandRejectionReason {
     AIRCRAFT_STATE_INELIGIBLE,
     INVALID_ALTITUDE,
     INVALID_SPEED,
+    INVALID_HEADING,
     INVALID_ROUTE,
     UNKNOWN_RUNWAY,
     RUNWAY_INACTIVE,
@@ -778,6 +784,7 @@ sealed interface PlayerCommand {
     data class AppendWaypoint(val aircraftId: String, val waypoint: Vec2) : PlayerCommand
     data class UndoWaypoint(val aircraftId: String) : PlayerCommand
     data class ClearRoute(val aircraftId: String) : PlayerCommand
+    data class SetTargetHeading(val aircraftId: String, val headingDegrees: Double) : PlayerCommand
     data class SetTargetAltitude(val aircraftId: String, val altitudeFeet: Double) : PlayerCommand
     data class SetTargetSpeed(val aircraftId: String, val speedKnots: Double) : PlayerCommand
     data class ClearToLand(val aircraftId: String, val runwayId: String) : PlayerCommand

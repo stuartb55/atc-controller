@@ -104,7 +104,11 @@ class AtcSimulationEngine(
                     reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Route waypoints must be finite normalized coordinates within the waypoint limit", events)
                     return@updateAircraft state
                 }
-                state.copy(route = Route(command.route.waypoints.toList()), routeIndex = 0)
+                state.copy(
+                    route = Route(command.route.waypoints.toList()),
+                    routeIndex = 0,
+                    assignedHeadingDegrees = null,
+                )
             }
             is PlayerCommand.DirectTo -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
@@ -112,7 +116,11 @@ class AtcSimulationEngine(
                     reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Waypoint must be a finite normalized coordinate", events)
                     return@updateAircraft state
                 }
-                state.copy(route = Route(listOf(command.waypoint)), routeIndex = 0)
+                state.copy(
+                    route = Route(listOf(command.waypoint)),
+                    routeIndex = 0,
+                    assignedHeadingDegrees = null,
+                )
             }
             is PlayerCommand.AppendWaypoint -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
@@ -121,7 +129,11 @@ class AtcSimulationEngine(
                     reject(state.id, CommandRejectionReason.INVALID_ROUTE, "Waypoint must be finite, normalized, and within the waypoint limit", events)
                     state
                 } else {
-                    state.copy(route = Route(remaining + command.waypoint), routeIndex = 0)
+                    state.copy(
+                        route = Route(remaining + command.waypoint),
+                        routeIndex = 0,
+                        assignedHeadingDegrees = null,
+                    )
                 }
             }
             is PlayerCommand.UndoWaypoint -> updateAircraft(command.aircraftId, events) { state ->
@@ -132,6 +144,23 @@ class AtcSimulationEngine(
             is PlayerCommand.ClearRoute -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
                 state.copy(route = Route.EMPTY, routeIndex = 0)
+            }
+            is PlayerCommand.SetTargetHeading -> updateAircraft(command.aircraftId, events) { state ->
+                if (!state.canReceiveFlightCommands()) return@updateAircraft null
+                if (!command.headingDegrees.isFinite()) {
+                    reject(
+                        state.id,
+                        CommandRejectionReason.INVALID_HEADING,
+                        "Heading must be a finite value",
+                        events,
+                    )
+                    return@updateAircraft state
+                }
+                state.copy(
+                    assignedHeadingDegrees = Navigation.normalizeHeading(command.headingDegrees),
+                    route = Route.EMPTY,
+                    routeIndex = 0,
+                )
             }
             is PlayerCommand.SetTargetAltitude -> updateAircraft(command.aircraftId, events) { state ->
                 if (!state.canReceiveFlightCommands()) return@updateAircraft null
@@ -1564,6 +1593,12 @@ class AtcSimulationEngine(
                 targetHeading,
                 state.type.turnRateDegreesPerSecond * dt,
             )
+        } else if (state.assignedHeadingDegrees != null) {
+            heading = Navigation.turnTowards(
+                heading,
+                state.assignedHeadingDegrees,
+                state.type.turnRateDegreesPerSecond * dt,
+            )
         }
         val requestedDistance = speedKnots * dt / 3_600.0
         val movedPosition = Navigation.move(
@@ -1713,6 +1748,7 @@ class AtcSimulationEngine(
         val updated = state.copy(
             status = AircraftStatus.GO_AROUND,
             headingDegrees = Navigation.normalizeHeading(runwayHeading),
+            assignedHeadingDegrees = Navigation.normalizeHeading(runwayHeading),
             targetAltitudeFeet = max(targetAltitudeFeet, state.altitudeFeet),
             targetSpeedKnots = max(state.targetSpeedKnots, state.type.maxLandingSpeedKnots + 30.0)
                 .coerceAtMost(state.type.maxSpeedKnots),

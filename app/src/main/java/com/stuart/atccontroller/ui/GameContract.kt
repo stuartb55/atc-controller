@@ -91,6 +91,7 @@ data class AircraftUiModel(
     val type: String,
     val position: NormalizedPoint,
     val headingDegrees: Float,
+    val targetHeadingDegrees: Int = 0,
     val altitudeFeet: Int,
     val targetAltitudeFeet: Int,
     val speedKnots: Int,
@@ -246,7 +247,7 @@ data class FixUiModel(
     val kind: FixKind = FixKind.ENTRY,
 )
 
-enum class FixKind { ENTRY, EXIT, APPROACH }
+enum class FixKind { ENTRY, EXIT, WAYPOINT, APPROACH }
 
 data class MissionUiModel(
     val id: String,
@@ -437,6 +438,7 @@ sealed interface GameAction {
     data class SelectFlightStrip(val aircraftId: String) : GameAction
     data class SetTargetAltitude(val feet: Int) : GameAction
     data class SetTargetSpeed(val knots: Int) : GameAction
+    data class SetTargetHeading(val degrees: Int) : GameAction
     /** Builds a stable final route and selects safe landing altitude/speed targets. */
     data object PrepareApproach : GameAction
     data class IssueClearance(val type: ClearanceType) : GameAction

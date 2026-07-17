@@ -1,5 +1,7 @@
 package com.stuart.atccontroller.ui
 
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import kotlin.math.hypot
 
 /** Semantic end point retained with a drawn route after a magnetic snap. */
@@ -18,32 +20,55 @@ internal data class RadarHitRegion(
     fun contains(x: Float, y: Float): Boolean = x in left..right && y in top..bottom
 }
 
-internal data class RadarSnapTarget(
-    val terminal: RouteTerminalTarget,
-    val position: NormalizedPoint,
-    val radius: Float,
-)
-
 internal fun hitTestAircraft(
     x: Float,
     y: Float,
     regions: List<RadarHitRegion>,
 ): String? = regions.lastOrNull { it.contains(x, y) }?.aircraftId
 
-internal fun selectSnapTarget(
-    point: NormalizedPoint,
-    targets: List<RadarSnapTarget>,
-): RadarSnapTarget? = targets
-    .asSequence()
-    .map { target ->
-        target to hypot(
-            (point.x - target.position.x).toDouble(),
-            (point.y - target.position.y).toDouble(),
-        ).toFloat()
-    }
-    .filter { (target, distance) -> distance <= target.radius }
-    .minByOrNull { (_, distance) -> distance }
-    ?.first
+internal data class RadarViewport(
+    val scale: Float = 1f,
+    val offset: Offset = Offset.Zero,
+)
+
+internal fun mapToScreen(point: Offset, viewport: RadarViewport, viewportSize: Size): Offset {
+    val center = Offset(viewportSize.width / 2f, viewportSize.height / 2f)
+    return center + (point - center) * viewport.scale + viewport.offset
+}
+
+internal fun screenToMap(point: Offset, viewport: RadarViewport, viewportSize: Size): Offset {
+    val center = Offset(viewportSize.width / 2f, viewportSize.height / 2f)
+    return center + (point - center - viewport.offset) / viewport.scale
+}
+
+internal fun updateRadarViewport(
+    current: RadarViewport,
+    centroid: Offset,
+    pan: Offset,
+    zoomChange: Float,
+    viewportSize: Size,
+    minimumScale: Float = 1f,
+    maximumScale: Float = 3f,
+): RadarViewport {
+    if (viewportSize.width <= 0f || viewportSize.height <= 0f) return current
+    val newScale = (current.scale * zoomChange).coerceIn(minimumScale, maximumScale)
+    if (newScale == minimumScale) return RadarViewport(minimumScale, Offset.Zero)
+
+    val center = Offset(viewportSize.width / 2f, viewportSize.height / 2f)
+    val anchoredMapPoint = screenToMap(centroid, current, viewportSize)
+    val rawOffset = centroid + pan - center - (anchoredMapPoint - center) * newScale
+    val maximumOffset = Offset(
+        viewportSize.width * (newScale - 1f) / 2f,
+        viewportSize.height * (newScale - 1f) / 2f,
+    )
+    return RadarViewport(
+        scale = newScale,
+        offset = Offset(
+            rawOffset.x.coerceIn(-maximumOffset.x, maximumOffset.x),
+            rawOffset.y.coerceIn(-maximumOffset.y, maximumOffset.y),
+        ),
+    )
+}
 
 internal fun routeTerminalIsAllowed(
     target: RouteTerminalTarget,
@@ -52,69 +77,6 @@ internal fun routeTerminalIsAllowed(
 ): Boolean = when (target) {
     is RouteTerminalTarget.AssignedRunway -> isArrival && target.runwayId == assignedRunwayId
     is RouteTerminalTarget.NavigationFix -> true
-}
-
-/** Reduces noisy finger samples while always retaining the gesture's start and end. */
-internal fun simplifyFingerPath(
-    points: List<NormalizedPoint>,
-    tolerance: Float = .008f,
-): List<NormalizedPoint> {
-    if (points.size <= 2) return points.distinct()
-    val toleranceSquared = tolerance * tolerance
-
-    fun perpendicularDistanceSquared(
-        point: NormalizedPoint,
-        start: NormalizedPoint,
-        end: NormalizedPoint,
-    ): Float {
-        val dx = end.x - start.x
-        val dy = end.y - start.y
-        if (dx == 0f && dy == 0f) {
-            val px = point.x - start.x
-            val py = point.y - start.y
-            return px * px + py * py
-        }
-        val t = (((point.x - start.x) * dx + (point.y - start.y) * dy) /
-            (dx * dx + dy * dy)).coerceIn(0f, 1f)
-        val px = point.x - (start.x + t * dx)
-        val py = point.y - (start.y + t * dy)
-        return px * px + py * py
-    }
-
-    fun reduce(first: Int, last: Int, keep: BooleanArray) {
-        var furthest = toleranceSquared
-        var furthestIndex = -1
-        for (index in first + 1 until last) {
-            val distance = perpendicularDistanceSquared(points[index], points[first], points[last])
-            if (distance > furthest) {
-                furthest = distance
-                furthestIndex = index
-            }
-        }
-        if (furthestIndex >= 0) {
-            keep[furthestIndex] = true
-            reduce(first, furthestIndex, keep)
-            reduce(furthestIndex, last, keep)
-        }
-    }
-
-    val keep = BooleanArray(points.size)
-    keep[0] = true
-    keep[points.lastIndex] = true
-    reduce(0, points.lastIndex, keep)
-    return points.filterIndexed { index, _ -> keep[index] }
-}
-
-internal fun isRouteGestureLongEnough(
-    points: List<NormalizedPoint>,
-    minimumDistance: Float = .035f,
-): Boolean {
-    if (points.size < 2) return false
-    var distance = 0.0
-    points.zipWithNext().forEach { (first, second) ->
-        distance += hypot((second.x - first.x).toDouble(), (second.y - first.y).toDouble())
-    }
-    return distance >= minimumDistance
 }
 
 /** Joins a freehand vector to the validated final without granting a landing clearance. */

@@ -611,11 +611,6 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
         }
         item {
             SettingToggle(
-                stringResource(R.string.assist_route_snapping),
-                stringResource(R.string.assist_practice_only),
-                configuration.routeSnapping,
-            ) { onAction(GameAction.ToggleCustomRouteSnapping) }
-            SettingToggle(
                 stringResource(R.string.assist_approach_setup),
                 stringResource(R.string.assist_practice_only),
                 configuration.approachSetup,
@@ -1048,12 +1043,7 @@ private fun MissionBriefing(
                     )
                 }
                 Spacer(Modifier.height(14.dp))
-                if (mission.contentDisclaimer.isNotBlank()) {
-                    Text(
-                        mission.contentDisclaimer,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.amber,
-                    )
+                if (mission.sourceAttribution.isNotBlank()) {
                     Text(
                         mission.sourceAttribution,
                         style = MaterialTheme.typography.labelSmall,
@@ -1159,11 +1149,6 @@ fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
             settings.labelDeclutteringEnabled,
         ) { onAction(GameAction.ToggleLabelDecluttering) }
         SettingToggle(
-            stringResource(R.string.route_snapping),
-            stringResource(R.string.route_snapping_summary),
-            settings.routeSnappingEnabled,
-        ) { onAction(GameAction.ToggleRouteSnapping) }
-        SettingToggle(
             stringResource(R.string.pause_on_focus_loss),
             stringResource(R.string.pause_on_focus_loss_summary),
             settings.pauseOnFocusLoss,
@@ -1226,13 +1211,41 @@ fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
                             content = radarContent,
                         )
                     }
+                    item { GameUseNotice() }
                 }
             } else {
-                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                    SettingsPanel(audioPanelTitle, Modifier.weight(1f), content = audioContent)
-                    SettingsPanel(radarPanelTitle, Modifier.weight(1f), content = radarContent)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                        SettingsPanel(audioPanelTitle, Modifier.weight(1f), content = audioContent)
+                        SettingsPanel(radarPanelTitle, Modifier.weight(1f), content = radarContent)
+                    }
+                    GameUseNotice()
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun GameUseNotice() {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = colors.amber.copy(alpha = .08f),
+        border = BorderStroke(1.dp, colors.amber.copy(alpha = .45f)),
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Text(
+                stringResource(R.string.about_entertainment_title).uppercase(),
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.amber,
+            )
+            Text(
+                stringResource(R.string.about_entertainment_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.muted,
+            )
         }
     }
 }
@@ -1439,12 +1452,6 @@ fun AboutScreen(onAction: (GameAction) -> Unit) {
 @Composable
 private fun AboutDetailsContent() {
     val colors = MaterialTheme.atcColors
-    AboutSection(
-        stringResource(R.string.about_entertainment_title).uppercase(),
-        stringResource(R.string.about_entertainment_body),
-        colors.amber,
-    )
-    HorizontalDivider(color = colors.line)
     AboutSection(
         stringResource(R.string.about_data_title).uppercase(),
         stringResource(R.string.about_data_body),

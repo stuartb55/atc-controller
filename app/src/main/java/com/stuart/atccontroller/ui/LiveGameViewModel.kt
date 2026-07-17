@@ -390,6 +390,12 @@ class LiveGameViewModel internal constructor(
                     speedKnots = action.knots.coerceIn(80, aircraft.type.maxSpeedKnots.toInt()).toDouble(),
                 )
             }
+            is GameAction.SetTargetHeading -> submitForSelected { aircraft ->
+                PlayerCommand.SetTargetHeading(
+                    aircraftId = aircraft.id,
+                    headingDegrees = normalizedHeading(action.degrees.toFloat()).toDouble(),
+                )
+            }
             GameAction.PrepareApproach -> prepareApproach()
             is GameAction.IssueClearance -> issueClearance(action.type)
             is GameAction.AssignRunway -> submitForSelected {
@@ -1212,6 +1218,7 @@ class LiveGameViewModel internal constructor(
             is PlayerCommand.AppendWaypoint -> TrainingAction.SET_ROUTE
             is PlayerCommand.SetTargetAltitude -> TrainingAction.SET_ALTITUDE
             is PlayerCommand.SetTargetSpeed -> TrainingAction.SET_SPEED
+            is PlayerCommand.SetTargetHeading -> return
             is PlayerCommand.ClearToLand -> TrainingAction.CLEAR_TO_LAND
             is PlayerCommand.GoAround -> TrainingAction.GO_AROUND
             is PlayerCommand.LineUpAndWait -> TrainingAction.LINE_UP_AND_WAIT
@@ -1422,7 +1429,6 @@ class LiveGameViewModel internal constructor(
             configurationIdentity = shiftConfiguration?.let(ShiftConfigurationCodec::encode),
             activeAssistLabels = shiftConfiguration?.assists?.let { assists ->
                 buildList {
-                    if (assists.routeSnapping) add(resources.getString(R.string.assist_route_snapping))
                     if (assists.approachSetup) add(resources.getString(R.string.assist_approach_setup))
                     if (assists.conflictPrediction) add(resources.getString(R.string.assist_conflict_prediction))
                 }
@@ -2453,6 +2459,9 @@ class LiveGameViewModel internal constructor(
             type = type.displayCode,
             position = position.toUiPoint(),
             headingDegrees = headingDegrees.toFloat(),
+            targetHeadingDegrees = (assignedHeadingDegrees ?: headingDegrees)
+                .toFloat()
+                .let(::normalizedHeading),
             altitudeFeet = altitudeFeet.roundToInt(),
             targetAltitudeFeet = targetAltitudeFeet.roundToInt(),
             speedKnots = speedKnots.roundToInt(),
@@ -2498,7 +2507,7 @@ class LiveGameViewModel internal constructor(
         }
     }
 
-    private fun fixesFor(snapshot: GameSnapshot): List<FixUiModel> = buildList {
+    private fun fixesFor(@Suppress("UNUSED_PARAMETER") snapshot: GameSnapshot): List<FixUiModel> = buildList {
         val airport = activeAirport()
         airport.fixes.forEach { fix ->
             add(
@@ -2509,20 +2518,8 @@ class LiveGameViewModel internal constructor(
                         FixUse.ENTRY -> FixKind.ENTRY
                         FixUse.EXIT -> FixKind.EXIT
                         FixUse.ENTRY_AND_EXIT -> FixKind.ENTRY
+                        FixUse.WAYPOINT -> FixKind.WAYPOINT
                     },
-                ),
-            )
-        }
-        val activeRunways = snapshot.runways.mapTo(mutableSetOf()) { it.id }
-        airport.runwayEnds.filter { it.id in activeRunways }.forEach { runway ->
-            add(
-                FixUiModel(
-                    name = "I-${runway.id}",
-                    position = NormalizedPoint(
-                        runway.approachGate.x.toFloat(),
-                        runway.approachGate.y.toFloat(),
-                    ),
-                    kind = FixKind.APPROACH,
                 ),
             )
         }
@@ -2757,6 +2754,10 @@ class LiveGameViewModel internal constructor(
                 aircraftId,
                 checkNotNull(value.toDoubleOrNull()).also { require(it in 0.0..1_000.0) },
             )
+            "F" -> PlayerCommand.SetTargetHeading(
+                aircraftId,
+                checkNotNull(value.toDoubleOrNull()).also { require(it.isFinite()) },
+            )
             "L" -> PlayerCommand.ClearToLand(aircraftId, value.also { require(it.isNotBlank()) })
             "T" -> PlayerCommand.ClearForTakeoff(aircraftId, value.also { require(it.isNotBlank()) })
             "G" -> PlayerCommand.GoAround(
@@ -2865,6 +2866,7 @@ class LiveGameViewModel internal constructor(
                 )
                 is PlayerCommand.SetTargetAltitude -> listOf("A", command.aircraftId, command.altitudeFeet.toString())
                 is PlayerCommand.SetTargetSpeed -> listOf("V", command.aircraftId, command.speedKnots.toString())
+                is PlayerCommand.SetTargetHeading -> listOf("F", command.aircraftId, command.headingDegrees.toString())
                 is PlayerCommand.ClearToLand -> listOf("L", command.aircraftId, command.runwayId)
                 is PlayerCommand.ClearForTakeoff -> listOf("T", command.aircraftId, command.runwayId)
                 is PlayerCommand.GoAround -> listOf("G", command.aircraftId, command.targetAltitudeFeet.toString())
@@ -3628,6 +3630,7 @@ private fun PlayerCommand.isReplayable() = when (this) {
     is PlayerCommand.LineUpAndWait,
     is PlayerCommand.SetRoute,
     is PlayerCommand.SetTargetAltitude,
+    is PlayerCommand.SetTargetHeading,
     is PlayerCommand.SetTargetSpeed,
     is PlayerCommand.UndoWaypoint -> true
     PlayerCommand.Pause,
@@ -3658,6 +3661,7 @@ private fun PlayerCommand.aircraftId(): String = when (this) {
     is PlayerCommand.LineUpAndWait -> aircraftId
     is PlayerCommand.SetRoute -> aircraftId
     is PlayerCommand.SetTargetAltitude -> aircraftId
+    is PlayerCommand.SetTargetHeading -> aircraftId
     is PlayerCommand.SetTargetSpeed -> aircraftId
     is PlayerCommand.UndoWaypoint -> aircraftId
     PlayerCommand.Pause,
@@ -3997,6 +4001,7 @@ private fun CommandRejectionReason.toDisplayText(resources: Resources): String =
         CommandRejectionReason.AIRCRAFT_STATE_INELIGIBLE -> R.string.rejection_aircraft_ineligible
         CommandRejectionReason.INVALID_ALTITUDE -> R.string.rejection_invalid_altitude
         CommandRejectionReason.INVALID_SPEED -> R.string.rejection_invalid_speed
+        CommandRejectionReason.INVALID_HEADING -> R.string.rejection_invalid_heading
         CommandRejectionReason.INVALID_ROUTE -> R.string.rejection_invalid_route
         CommandRejectionReason.UNKNOWN_RUNWAY -> R.string.rejection_unknown_runway
         CommandRejectionReason.RUNWAY_INACTIVE -> R.string.rejection_runway_inactive

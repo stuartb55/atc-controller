@@ -108,26 +108,4 @@ class LabelLayoutTest {
         assertTrue(LabelBounds(position.x, position.y, 96f, 18f).inside(320f, 220f, 6f))
     }
 
-    @Test
-    fun diagonalRunwayBadgesSitBeyondTheRunwayEnds() {
-        val (threshold, farEnd) = runwayEndLabelPositions(
-            plotWidth = 360f,
-            plotHeight = 420f,
-            center = NormalizedPoint(.5f, .55f),
-            headingDegrees = 231f,
-            labelWidth = 76f,
-            labelHeight = 22f,
-            gap = 8f,
-            inset = 6f,
-        )
-        val center = Offset(180f, 231f)
-        val thresholdCenter = threshold + Offset(38f, 11f)
-        val farEndCenter = farEnd + Offset(38f, 11f)
-        val runwayHalfLength = 360f * .145f
-
-        assertTrue((thresholdCenter - center).getDistance() > runwayHalfLength)
-        assertTrue((farEndCenter - center).getDistance() > runwayHalfLength)
-        assertTrue(LabelBounds(threshold.x, threshold.y, 76f, 22f).inside(360f, 420f, 6f))
-        assertTrue(LabelBounds(farEnd.x, farEnd.y, 76f, 22f).inside(360f, 420f, 6f))
-    }
 }

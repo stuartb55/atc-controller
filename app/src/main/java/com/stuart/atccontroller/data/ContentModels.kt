@@ -36,6 +36,8 @@ enum class FixUse {
     ENTRY,
     EXIT,
     ENTRY_AND_EXIT,
+    /** A controller-addressable terminal fix that is not a traffic spawn boundary. */
+    WAYPOINT,
 }
 
 data class NavigationFixDefinition(

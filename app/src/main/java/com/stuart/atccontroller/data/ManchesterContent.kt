@@ -4,8 +4,8 @@ import com.stuart.atccontroller.simulation.Navigation
 import com.stuart.atccontroller.simulation.Vec2
 
 /**
- * Authored game content inspired by Manchester Airport. Coordinates, fixes, traffic and
- * procedures are deliberately fictionalized for playability and must not be used operationally.
+ * Authored game content inspired by Manchester Airport. Published fixes are compressed into the
+ * playable terminal-area geometry while retaining their broad position relative to the airport.
  */
 object ManchesterContent {
     const val AIRPORT_ID = "manchester_game"
@@ -66,14 +66,21 @@ object ManchesterContent {
             ),
         ),
         fixes = listOf(
-            fix("GAME_NORTHWEST", "North-west Gate", 0.05, 0.16),
-            fix("GAME_NORTH", "North Gate", 0.45, 0.02),
-            fix("GAME_NORTHEAST", "North-east Gate", 0.90, 0.09),
-            fix("GAME_EAST", "East Gate", 0.98, 0.46),
-            fix("GAME_SOUTHEAST", "South-east Gate", 0.91, 0.90),
-            fix("GAME_SOUTH", "South Gate", 0.52, 0.98),
-            fix("GAME_SOUTHWEST", "South-west Gate", 0.08, 0.90),
-            fix("GAME_WEST", "West Gate", 0.02, 0.51),
+            // Real Manchester terminal/SID fixes, placed on a compressed game-scale chart.
+            fix("GAME_NORTHWEST", "MIRSI", 0.12, 0.27),
+            fix("GAME_NORTH", "ROSUN", 0.58, 0.07),
+            fix("GAME_NORTHEAST", "POL", 0.78, 0.14),
+            fix("GAME_EAST", "DAYNE", 0.91, 0.67),
+            fix("GAME_SOUTHEAST", "SANBA", 0.65, 0.91),
+            fix("GAME_SOUTH", "LISTO", 0.45, 0.95),
+            fix("GAME_SOUTHWEST", "KUXEM", 0.13, 0.77),
+            fix("GAME_WEST", "ASMIM", 0.07, 0.43),
+            waypoint("XOBRO", 0.27, 0.34),
+            waypoint("WAL", 0.11, 0.53),
+            waypoint("MCT", 0.50, 0.51),
+            waypoint("BURNI", 0.66, 0.24),
+            waypoint("TNT", 0.76, 0.73),
+            waypoint("EKLAD", 0.06, 0.70),
         ),
         source = ContentSourceMetadata(
             sourceName = "UK AIP Manchester Aerodrome Chart",
@@ -417,7 +424,15 @@ object ManchesterContent {
         displayName = name,
         position = NormalizedPoint(x, y),
         use = FixUse.ENTRY_AND_EXIT,
-        isFictional = true,
+        isFictional = false,
+    )
+
+    private fun waypoint(name: String, x: Double, y: Double) = NavigationFixDefinition(
+        id = name,
+        displayName = name,
+        position = NormalizedPoint(x, y),
+        use = FixUse.WAYPOINT,
+        isFictional = false,
     )
 
     private fun mission(

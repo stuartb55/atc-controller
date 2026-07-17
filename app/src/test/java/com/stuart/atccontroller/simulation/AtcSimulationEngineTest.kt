@@ -61,6 +61,25 @@ class AtcSimulationEngineTest {
     }
 
     @Test
+    fun `heading assignment vectors aircraft and direct-to resumes waypoint navigation`() {
+        val engine = engineWith(arrival("A", position = Vec2(.5, .5), heading = 0.0, speed = 180.0))
+        engine.submit(PlayerCommand.Start)
+
+        engine.submit(PlayerCommand.SetTargetHeading("A", 90.0))
+        engine.advanceFixedSteps(10)
+
+        val vectored = engine.snapshot.aircraft.single()
+        assertEquals(15.0, vectored.headingDegrees, 1e-6)
+        assertEquals(90.0, vectored.assignedHeadingDegrees ?: -1.0, 0.0)
+        assertTrue(vectored.route.waypoints.isEmpty())
+
+        engine.submit(PlayerCommand.DirectTo("A", Vec2(.2, .5)))
+
+        assertEquals(null, engine.snapshot.aircraft.single().assignedHeadingDegrees)
+        assertEquals(listOf(Vec2(.2, .5)), engine.snapshot.aircraft.single().route.waypoints)
+    }
+
+    @Test
     fun `invalid command is rejected without changing target`() {
         val engine = engineWith(arrival("A"))
         engine.submit(PlayerCommand.Start)

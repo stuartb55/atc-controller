@@ -1,6 +1,6 @@
 # Manchester Approach
 
-An offline Android air traffic control strategy game. Draw routes, issue simplified clearances, and sequence arrivals and departures across two deterministic sector packs.
+An offline Android air traffic control strategy game. Issue heading, level, speed and waypoint commands while sequencing arrivals and departures across two deterministic sector packs.
 
 New controller? Start with the [complete how-to-play guide](HOW_TO_PLAY.md), including a
 step-by-step walkthrough of the first mission.
@@ -28,6 +28,6 @@ Run `./gradlew test` for JVM tests, `./gradlew assembleDebug` for an installable
 Release builds use code and resource shrinking. Local release APKs remain unsigned; signed Play
 bundles are gated by the secret-safe CI process in [RELEASING.md](RELEASING.md).
 
-## Aviation data notice
+## Aviation data
 
-The Manchester layout is an intentionally simplified entertainment representation informed by the UK AIP snapshot dated 16 April 2026. Harbour Approach is an original fictional crossing-runway layout. Neither pack is current operational data, and neither may be used for navigation, operational decisions or ATC training. NATS and Manchester Airport do not endorse this game.
+The Manchester layout and named fixes are informed by the UK AIP snapshot dated 16 April 2026. Harbour Approach is an original crossing-runway layout. The in-app game-use notice is available in Settings.

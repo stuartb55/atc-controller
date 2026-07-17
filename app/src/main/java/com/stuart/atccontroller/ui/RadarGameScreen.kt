@@ -4,8 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -64,7 +64,6 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -86,7 +85,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.stuart.atccontroller.R
@@ -119,7 +117,7 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     RadarDisplay(
                         state = state,
                         onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
-                        onCommitRoute = { points, target -> onAction(GameAction.CommitRoute(points, target)) },
+                        onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
                         onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
@@ -141,7 +139,7 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         RadarDisplay(
                             state = state,
                             onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
-                            onCommitRoute = { points, target -> onAction(GameAction.CommitRoute(points, target)) },
+                            onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
                             onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
@@ -454,19 +452,14 @@ private fun TimeControl(timeScale: Int, onAction: (GameAction) -> Unit) {
 private fun RadarDisplay(
     state: GameUiState,
     onSelectAircraft: (String?) -> Unit,
-    onCommitRoute: (List<NormalizedPoint>, RouteTerminalTarget?) -> Unit,
+    onDirectToFix: (String) -> Unit,
     onCycleConflict: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
-    var draftRoute by remember(state.selectedAircraftId) { mutableStateOf<List<NormalizedPoint>>(emptyList()) }
-    var activeSnapTarget by remember(state.selectedAircraftId) { mutableStateOf<RadarSnapTarget?>(null) }
-    var draggingAircraftId by remember { mutableStateOf<String?>(null) }
+    var viewport by remember { mutableStateOf(RadarViewport()) }
     val previousLabelPositions = remember { mutableMapOf<String, Offset>() }
-    val latestAircraft by rememberUpdatedState(state.aircraft)
-    val latestSelectedAircraft by rememberUpdatedState(state.selectedAircraft)
     val hitRadiusPx = with(LocalDensity.current) { 48.dp.toPx() }
-    val haptic = LocalHapticFeedback.current
     val radarDescription = stringResource(R.string.cd_terminal_radar)
     val directFix = state.selectedAircraft?.takeIf { it.phase == FlightPhase.DEPARTURE }?.let { selected ->
         state.fixes.minByOrNull { fix ->
@@ -498,10 +491,7 @@ private fun RadarDisplay(
                         if ((directFix != null) && (directActionLabel != null)) {
                             add(
                                 CustomAccessibilityAction(directActionLabel) {
-                                    onCommitRoute(
-                                        listOf(directFix.position),
-                                        RouteTerminalTarget.NavigationFix(directFix.name),
-                                    )
+                                    onDirectToFix(directFix.name)
                                     true
                                 },
                             )
@@ -543,39 +533,6 @@ private fun RadarDisplay(
                         LabelBounds(plotWidthPx / 2f - 125f * density, 8f * density, 250f * density, 52f * density),
                     )
                 }
-                
-                // Register runway labels first
-                state.visibleRunways.forEach { runway ->
-                    val radians = Math.toRadians(runway.headingDegrees.toDouble())
-                    val axisX = sin(radians).toFloat()
-                    val axisY = -cos(radians).toFloat()
-                    val halfLength = minOf(plotWidthPx, plotHeightPx) * .145f
-                    val labelWidth = 76f * density
-                    val labelHeight = 22f * density
-                    val (thresholdLabel, farEndLabel) = runwayEndLabelPositions(
-                        plotWidth = plotWidthPx,
-                        plotHeight = plotHeightPx,
-                        center = runway.center,
-                        headingDegrees = runway.headingDegrees,
-                        labelWidth = labelWidth,
-                        labelHeight = labelHeight,
-                        gap = 8f * density,
-                        inset = RadarContentInset.value * density,
-                    )
-                    manager.registerStaticLabel(thresholdLabel.x, thresholdLabel.y, 76.dp, 22.dp)
-                    manager.registerStaticLabel(farEndLabel.x, farEndLabel.y, 76.dp, 22.dp)
-                    val centerX = plotWidthPx * runway.center.x
-                    val centerY = plotHeightPx * runway.center.y
-                    manager.registerObstacle(
-                        LabelBounds(
-                            minOf(centerX - axisX * halfLength, centerX + axisX * halfLength) - 6f * density,
-                            minOf(centerY - axisY * halfLength, centerY + axisY * halfLength) - 6f * density,
-                            kotlin.math.abs(axisX * halfLength * 2f) + 12f * density,
-                            kotlin.math.abs(axisY * halfLength * 2f) + 12f * density,
-                        ),
-                    )
-                }
-
                 // Register fixes
                 state.fixes.forEach { fix ->
                     val position = boundedMapLabelPosition(
@@ -635,184 +592,105 @@ private fun RadarDisplay(
                 }
             }
             val latestHitRegions by rememberUpdatedState(hitRegions)
-            val snapTargets = remember(
-                state.selectedAircraft,
-                state.fixes,
-                state.settings.routeSnappingEnabled,
-                state.routeSnappingAssistEnabled,
-            ) {
-                buildList {
-                    if (!state.settings.routeSnappingEnabled || !state.routeSnappingAssistEnabled) {
-                        return@buildList
+            val latestViewport by rememberUpdatedState(viewport)
+            val viewportSize = Size(plotWidthPx, plotHeightPx)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(plotWidthPx, plotHeightPx, hitRadiusPx) {
+                        detectTapGestures { tap ->
+                            val mapPoint = screenToMap(tap, latestViewport, viewportSize)
+                            onSelectAircraft(hitTestAircraft(mapPoint.x, mapPoint.y, latestHitRegions))
+                        }
                     }
-                    state.fixes.filter { it.kind != FixKind.APPROACH }.forEach { fix ->
-                        add(
-                            RadarSnapTarget(
-                                RouteTerminalTarget.NavigationFix(fix.name),
-                                fix.position,
-                                .065f,
+                    .pointerInput(plotWidthPx, plotHeightPx) {
+                        detectTransformGestures { centroid, pan, zoom, _ ->
+                            viewport = updateRadarViewport(
+                                current = viewport,
+                                centroid = centroid,
+                                pan = pan,
+                                zoomChange = zoom,
+                                viewportSize = viewportSize,
+                            )
+                        }
+                    },
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = viewport.scale
+                            scaleY = viewport.scale
+                            translationX = viewport.offset.x
+                            translationY = viewport.offset.y
+                            transformOrigin = TransformOrigin.Center
+                        },
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        drawRadarGrid(colors)
+                        drawAirport(state.visibleRunways, colors)
+                        drawFixes(state.fixes, colors)
+                        if (state.settings.trailsEnabled) drawTrails(state.aircraft, colors)
+                        drawRoutes(state.aircraft, state.selectedAircraftId, colors)
+                        drawConflicts(state, colors)
+                        drawAircraft(
+                            state.aircraft,
+                            state.selectedAircraftId,
+                            labelLayouts,
+                            colors,
+                            density,
+                            state.settings.labelScale,
+                        )
+                    }
+
+                    state.fixes.forEach { fix ->
+                        val position = boundedMapLabelPosition(
+                            anchorPx = Offset(
+                                plotWidth.value * fix.position.x,
+                                plotHeight.value * fix.position.y,
+                            ),
+                            plotWidthPx = plotWidth.value,
+                            plotHeightPx = plotHeight.value,
+                            labelWidthPx = FixLabelWidth.value,
+                            labelHeightPx = FixLabelHeight.value,
+                            gapPx = 7f,
+                            insetPx = RadarContentInset.value,
+                        )
+                        Text(
+                            text = fix.name,
+                            modifier = Modifier
+                                .offset(position.x.dp, position.y.dp)
+                                .width(FixLabelWidth),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when (fix.kind) {
+                                FixKind.WAYPOINT -> colors.cyan
+                                FixKind.APPROACH -> colors.cyan
+                                FixKind.ENTRY, FixKind.EXIT -> colors.greenDim
+                            },
+                            fontSize = 8.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+
+                    state.aircraft.forEach { aircraft ->
+                        val layout = labelLayouts[aircraft.id] ?: (Offset.Zero to LabelQuadrant.TOP_RIGHT)
+                        AircraftDataLabel(
+                            aircraft = aircraft,
+                            selected = aircraft.id == state.selectedAircraftId,
+                            decluttered = state.settings.labelDeclutteringEnabled &&
+                                aircraft.id != state.selectedAircraftId &&
+                                aircraft.conflictLevel == ConflictLevel.NONE,
+                            scale = state.settings.labelScale,
+                            onClick = { onSelectAircraft(aircraft.id) },
+                            modifier = Modifier.offset(
+                                with(LocalDensity.current) { layout.first.x.toDp() },
+                                with(LocalDensity.current) { layout.first.y.toDp() },
                             ),
                         )
                     }
-                    state.selectedAircraft?.assignedRunway?.let { runwayId ->
-                        state.fixes.firstOrNull { it.kind == FixKind.APPROACH && it.name == "I-$runwayId" }
-                            ?.let { gate ->
-                                add(
-                                    RadarSnapTarget(
-                                        RouteTerminalTarget.AssignedRunway(runwayId),
-                                        gate.position,
-                                        .085f,
-                                    ),
-                                )
-                            }
-                    }
                 }
-            }
-            val latestSnapTargets by rememberUpdatedState(snapTargets)
-
-            Canvas(
-                modifier = Modifier
-                    .fillMaxSize()
-                    // Keep the gesture detector stable while the 10 Hz simulation updates positions.
-                    // Restarting it for every snapshot can cancel an in-progress tap or drag.
-                    .pointerInput(hitRadiusPx) {
-                        detectTapGestures { tap ->
-                            onSelectAircraft(hitTestAircraft(tap.x, tap.y, latestHitRegions))
-                        }
-                    }
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = { start ->
-                                val aircraftId = hitTestAircraft(start.x, start.y, latestHitRegions)
-                                    ?: return@detectDragGestures
-                                val selected = latestAircraft.firstOrNull { it.id == aircraftId }
-                                    ?: return@detectDragGestures
-                                draggingAircraftId = aircraftId
-                                if (aircraftId != latestSelectedAircraft?.id) onSelectAircraft(aircraftId)
-                                draftRoute = listOf(
-                                    selected.position,
-                                    NormalizedPoint(start.x / size.width, start.y / size.height).clamped(),
-                                )
-                            },
-                            onDrag = { change, _ ->
-                                if (draggingAircraftId != null) {
-                                    val next = NormalizedPoint(
-                                        change.position.x / size.width,
-                                        change.position.y / size.height,
-                                    ).clamped()
-                                    val snap = selectSnapTarget(next, latestSnapTargets)
-                                    if (snap?.terminal != activeSnapTarget?.terminal) {
-                                        if (snap != null) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        activeSnapTarget = snap
-                                    }
-                                    val sampled = snap?.position ?: next
-                                    val previous = draftRoute.lastOrNull()
-                                    if (previous == null || hypot((sampled.x - previous.x).toDouble(), (sampled.y - previous.y).toDouble()) > .009) {
-                                        draftRoute += sampled
-                                    }
-                                }
-                            },
-                            onDragEnd = {
-                                val simplified = simplifyFingerPath(draftRoute.drop(1))
-                                if (isRouteGestureLongEnough(draftRoute)) {
-                                    onCommitRoute(simplified, activeSnapTarget?.terminal)
-                                }
-                                draftRoute = emptyList()
-                                activeSnapTarget = null
-                                draggingAircraftId = null
-                            },
-                            onDragCancel = {
-                                draftRoute = emptyList()
-                                activeSnapTarget = null
-                                draggingAircraftId = null
-                            },
-                        )
-                    },
-            ) {
-                drawRadarGrid(colors)
-                drawAirport(state.visibleRunways, colors)
-                drawFixes(state.fixes, colors)
-                snapTargets.forEach { target ->
-                    val active = target.terminal == activeSnapTarget?.terminal
-                    drawCircle(
-                        color = if (active) colors.cyan.copy(alpha = .22f) else colors.cyan.copy(alpha = .055f),
-                        radius = size.minDimension * target.radius,
-                        center = target.position.toOffset(size),
-                        style = Stroke(if (active) 3f else 1f),
-                    )
-                }
-                if (state.settings.trailsEnabled) drawTrails(state.aircraft, colors)
-                drawRoutes(state.aircraft, state.selectedAircraftId, colors)
-                if (draftRoute.isNotEmpty()) {
-                    drawPolyline(
-                        points = draftRoute,
-                        color = colors.cyan,
-                        width = 3.5f,
-                        dashed = true,
-                    )
-                    draftRoute.forEach { point -> drawCircle(colors.cyan, 3.2f, point.toOffset(size)) }
-                }
-                drawConflicts(state, colors)
-                drawAircraft(
-                    state.aircraft,
-                    state.selectedAircraftId,
-                    labelLayouts,
-                    colors,
-                    density,
-                    state.settings.labelScale,
-                )
-            }
-
-            state.fixes.forEach { fix ->
-                val position = boundedMapLabelPosition(
-                    anchorPx = Offset(
-                        plotWidth.value * fix.position.x,
-                        plotHeight.value * fix.position.y,
-                    ),
-                    plotWidthPx = plotWidth.value,
-                    plotHeightPx = plotHeight.value,
-                    labelWidthPx = FixLabelWidth.value,
-                    labelHeightPx = FixLabelHeight.value,
-                    gapPx = 7f,
-                    insetPx = RadarContentInset.value,
-                )
-                Text(
-                    text = fix.name,
-                    modifier = Modifier
-                        .offset(position.x.dp, position.y.dp)
-                        .width(FixLabelWidth),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (fix.kind == FixKind.APPROACH) colors.cyan else colors.greenDim,
-                    fontSize = 8.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            state.visibleRunways.forEach { runway ->
-                RunwayEndLabels(
-                    runway = runway,
-                    plotWidth = plotWidth,
-                    plotHeight = plotHeight,
-                )
-            }
-
-            state.aircraft.forEach { aircraft ->
-                val layout = labelLayouts[aircraft.id] ?: (Offset.Zero to LabelQuadrant.TOP_RIGHT)
-                AircraftDataLabel(
-                    aircraft = aircraft,
-                    selected = aircraft.id == state.selectedAircraftId,
-                    decluttered = state.settings.labelDeclutteringEnabled &&
-                        aircraft.id != state.selectedAircraftId &&
-                        aircraft.conflictLevel == ConflictLevel.NONE,
-                    scale = state.settings.labelScale,
-                    onClick = { onSelectAircraft(aircraft.id) },
-                    modifier = Modifier.offset(
-                        with(LocalDensity.current) { layout.first.x.toDp() },
-                        with(LocalDensity.current) { layout.first.y.toDp() },
-                    ),
-                )
-            }
 
             state.activeConflict?.let { conflict ->
                 ConflictBanner(
@@ -853,6 +731,63 @@ private fun RadarDisplay(
                     )
                 }
             }
+            RadarZoomControls(
+                viewport = viewport,
+                onZoom = { factor ->
+                    viewport = updateRadarViewport(
+                        current = viewport,
+                        centroid = Offset(plotWidthPx / 2f, plotHeightPx / 2f),
+                        pan = Offset.Zero,
+                        zoomChange = factor,
+                        viewportSize = viewportSize,
+                    )
+                },
+                onReset = { viewport = RadarViewport() },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(9.dp),
+            )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadarZoomControls(
+    viewport: RadarViewport,
+    onZoom: (Float) -> Unit,
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    val zoomOutDescription = stringResource(R.string.zoom_out)
+    val zoomInDescription = stringResource(R.string.zoom_in)
+    val resetDescription = stringResource(R.string.reset_map)
+    Surface(
+        modifier = modifier,
+        color = colors.night.copy(alpha = .88f),
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, colors.line.copy(alpha = .7f)),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(
+                onClick = { onZoom(.8f) },
+                enabled = viewport.scale > 1f,
+                modifier = Modifier.semantics { contentDescription = zoomOutDescription },
+            ) { Text("−", color = colors.green, fontSize = 20.sp) }
+            TextButton(
+                onClick = onReset,
+                modifier = Modifier.semantics { contentDescription = resetDescription },
+            ) {
+                Text(
+                    stringResource(R.string.map_zoom_value, (viewport.scale * 100).roundToInt()),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                )
+            }
+            TextButton(
+                onClick = { onZoom(1.25f) },
+                enabled = viewport.scale < 3f,
+                modifier = Modifier.semantics { contentDescription = zoomInDescription },
+            ) { Text("+", color = colors.green, fontSize = 18.sp) }
         }
     }
 }
@@ -973,6 +908,7 @@ private fun DrawScope.drawAirport(runways: List<RunwayUiModel>, colors: AtcPalet
             val mark = center - axis * (runwayLength * (.75f + index * .27f))
             drawLine(colors.cyan.copy(alpha = .28f), mark - perp * 5f, mark + perp * 5f, 1f)
         }
+        drawRunwayDesignators(runway, center, axis, perp, runwayLength, colors)
     }
 
     // Early missions activate one runway, but retain the airport's second physical runway as
@@ -985,6 +921,32 @@ private fun DrawScope.drawAirport(runways: List<RunwayUiModel>, colors: AtcPalet
         val perp = Offset(-axis.y, axis.x)
         drawRunwayBody(center + perp * 13f, axis, runwayLength, occupied = false, alpha = .42f, colors = colors)
     }
+}
+
+private fun DrawScope.drawRunwayDesignators(
+    runway: RunwayUiModel,
+    center: Offset,
+    axis: Offset,
+    perpendicular: Offset,
+    runwayLength: Float,
+    colors: AtcPalette,
+) {
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+        textSize = 9f
+        color = colors.white.copy(alpha = .76f).toArgb()
+    }
+    val threshold = center - axis * (runwayLength / 2f) + perpendicular * 11f
+    val farEnd = center + axis * (runwayLength / 2f) + perpendicular * 11f
+    drawContext.canvas.nativeCanvas.drawText(runway.id, threshold.x, threshold.y + 3f, paint)
+    drawContext.canvas.nativeCanvas.drawText(
+        reciprocalRunwayId(runway.id),
+        farEnd.x,
+        farEnd.y + 3f,
+        paint,
+    )
 }
 
 private fun DrawScope.drawRunwayBody(
@@ -1016,7 +978,11 @@ private fun DrawScope.drawRunwayBody(
 private fun DrawScope.drawFixes(fixes: List<FixUiModel>, colors: AtcPalette) {
     fixes.forEach { fix ->
         val p = fix.position.toOffset(size)
-        val color = if (fix.kind == FixKind.APPROACH) colors.cyan else colors.greenDim
+        val color = if (fix.kind == FixKind.WAYPOINT || fix.kind == FixKind.APPROACH) {
+            colors.cyan
+        } else {
+            colors.greenDim
+        }
         val path = Path().apply {
             moveTo(p.x, p.y - 5f)
             lineTo(p.x + 4.5f, p.y + 4f)
@@ -1306,63 +1272,6 @@ private fun AircraftDataLabel(
     }
 }
 
-@Composable
-private fun RunwayEndLabels(
-    runway: RunwayUiModel,
-    plotWidth: Dp,
-    plotHeight: Dp,
-) {
-    val labelWidth = 76.dp
-    val labelHeight = 22.dp
-    val (threshold, farEnd) = runwayEndLabelPositions(
-        plotWidth = plotWidth.value,
-        plotHeight = plotHeight.value,
-        center = runway.center,
-        headingDegrees = runway.headingDegrees,
-        labelWidth = labelWidth.value,
-        labelHeight = labelHeight.value,
-        gap = 8f,
-        inset = RadarContentInset.value,
-    )
-
-    RunwayBadge(
-        text = stringResource(
-            R.string.runway_heading_label,
-            runway.id,
-            normalizedHeading(runway.headingDegrees),
-        ),
-        active = true,
-        modifier = Modifier.offset(threshold.x.dp, threshold.y.dp),
-    )
-    RunwayBadge(
-        text = reciprocalRunwayId(runway.id),
-        active = false,
-        modifier = Modifier.offset(farEnd.x.dp, farEnd.y.dp),
-    )
-}
-
-@Composable
-private fun RunwayBadge(text: String, active: Boolean, modifier: Modifier = Modifier) {
-    val colors = MaterialTheme.atcColors
-    Surface(
-        modifier = modifier.width(76.dp),
-        color = colors.night.copy(alpha = if (active) .92f else .76f),
-        shape = RoundedCornerShape(4.dp),
-        border = BorderStroke(1.dp, if (active) colors.cyan else colors.line),
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp),
-            color = if (active) colors.cyan else colors.muted,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            fontSize = if (active) 8.sp else 7.sp,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-        )
-    }
-}
-
 internal fun normalizedHeading(headingDegrees: Float): Int =
     ((headingDegrees.roundToInt() % 360) + 360) % 360
 
@@ -1639,6 +1548,15 @@ private fun CommandPanel(
                     }
                     if (!paged || page == CommandPanelPage.CONTROL) {
                 SectionLabel(stringResource(R.string.vector_controls))
+                Spacer(Modifier.height(7.dp))
+                StepControl(
+                    label = stringResource(R.string.target_heading),
+                    value = stringResource(R.string.heading_value, selected.targetHeadingDegrees),
+                    detail = stringResource(R.string.heading_step),
+                    onDecrease = {
+                        onAction(GameAction.SetTargetHeading(selected.targetHeadingDegrees - 5))
+                    },
+                ) { onAction(GameAction.SetTargetHeading(selected.targetHeadingDegrees + 5)) }
                 Spacer(Modifier.height(7.dp))
                 StepControl(
                     label = stringResource(R.string.target_altitude),
@@ -2625,7 +2543,6 @@ private fun TutorialOverlay(
                             color = colors.amber,
                         )
                     }
-                    Text(stringResource(R.string.training_disclaimer), style = MaterialTheme.typography.labelSmall, color = colors.muted)
                     Spacer(Modifier.height(13.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
