@@ -11,9 +11,11 @@ import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.dp
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
@@ -53,6 +55,7 @@ class SupportingScreensTest {
 
     @Test
     fun compactMissionSelectionUsesOneScrollContainerAndReachesTheLastMission() {
+        val actions = mutableListOf<GameAction>()
         val template = shellTestState().missions.single()
         val missions = (1..12).map { number ->
             template.copy(
@@ -70,13 +73,18 @@ class SupportingScreensTest {
         composeRule.setContent {
             AtcControllerTheme {
                 Box(Modifier.size(width = 360.dp, height = 640.dp)) {
-                    MissionSelectScreen(state, onAction = {})
+                    MissionSelectScreen(state, onAction = actions::add)
                 }
             }
         }
 
         composeRule.onAllNodes(hasScrollAction()).assertCountEquals(1)
-        composeRule.onNodeWithText("Mission 12").performScrollTo().assertIsDisplayed().assertHasClickAction()
+        composeRule.onNodeWithText("Mission 12")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertHasClickAction()
+            .performClick()
+        assertEquals(listOf(GameAction.SelectMission("mission_12")), actions)
     }
 
     @Test
