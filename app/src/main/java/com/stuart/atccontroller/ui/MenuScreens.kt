@@ -61,10 +61,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.stuart.atccontroller.R
 import java.text.NumberFormat
 import java.util.Locale
@@ -1546,6 +1544,7 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         state = state,
                         onAction = onAction,
                         compact = true,
+                        internalScrollingEnabled = false,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 360.dp),
                     )
                 }
@@ -1604,6 +1603,7 @@ fun ResultsScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                 state = state,
                 onAction = onAction,
                 compact = compact,
+                internalScrollingEnabled = true,
                 modifier = Modifier.weight(1.1f).fillMaxHeight(),
             )
         }
@@ -1616,9 +1616,11 @@ private fun ResultsPerformancePanel(
     state: GameUiState,
     onAction: (GameAction) -> Unit,
     compact: Boolean,
+    internalScrollingEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
+    val scrollState = rememberScrollState()
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(22.dp),
@@ -1628,7 +1630,9 @@ private fun ResultsPerformancePanel(
         Column(
             Modifier
                 .padding(if (compact) 18.dp else 26.dp)
-                .verticalScroll(rememberScrollState()),
+                .then(
+                    if (internalScrollingEnabled) Modifier.verticalScroll(scrollState) else Modifier,
+                ),
         ) {
             SectionLabel(stringResource(R.string.performance_breakdown))
             Spacer(Modifier.height(if (compact) 8.dp else 16.dp))

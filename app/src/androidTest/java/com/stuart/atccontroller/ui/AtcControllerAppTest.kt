@@ -223,6 +223,34 @@ class AtcControllerAppTest {
     }
 
     @Test
+    fun portraitResultsKeepTheEntireDebriefReachable() {
+        val state = testGameUiState().copy(
+            screen = AppScreen.RESULTS,
+            result = MissionResultUiModel(
+                title = "First Contact",
+                stars = 2,
+                score = 2_450,
+                safeArrivals = 2,
+                safeDepartures = 1,
+                efficiencyBonus = 350,
+                separationPenalty = 0,
+                personalBest = true,
+            ),
+            progressionSaveStatus = ProgressionSaveStatus.SAVED,
+        )
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 800.dp)) {
+                    AtcControllerApp(state, onAction = {})
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("PERFORMANCE BREAKDOWN").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("RETURN TO OPERATIONS").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
     fun conflictBannerCyclesPairsAndSelectsByCallsign() {
         val viewModel = TestGameController()
         viewModel.onAction(GameAction.StartSelectedMission)
@@ -257,7 +285,7 @@ class AtcControllerAppTest {
 
         composeRule.runOnIdle {
             assertNotEquals(standard, highContrast)
-            assertEquals(Color.Black, highContrast?.night)
+            assertTrue("High-contrast night color should be black", highContrast?.night == Color.Black)
             assertNotEquals(standard?.line, highContrast?.line)
         }
     }
