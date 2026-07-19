@@ -37,22 +37,22 @@ data class AtcPalette(
 )
 
 private val StandardAtcPalette = AtcPalette(
-    night = Color(0xFF030908),
-    radar = Color(0xFF061311),
-    radarGlow = Color(0xFF0C2520),
+    night = Color(0xFF050B0D),
+    radar = Color(0xFF071517),
+    radarGlow = Color(0xFF0B2425),
     dataLabel = Color(0xD90A1715),
     selectedDataLabel = Color(0xE6143134),
-    panel = Color(0xFF0B1917),
-    panelRaised = Color(0xFF10231F),
-    line = Color(0xFF26443E),
-    green = Color(0xFF60F6B2),
-    greenBright = Color(0xFFA2FFD2),
-    greenDim = Color(0xFF2F9B70),
-    cyan = Color(0xFF62D8F4),
-    amber = Color(0xFFFFC857),
-    red = Color(0xFFFF6B6B),
-    white = Color(0xFFE9FFF6),
-    muted = Color(0xFF8EA9A1),
+    panel = Color(0xFF0D1B1D),
+    panelRaised = Color(0xFF14272A),
+    line = Color(0xFF315055),
+    green = Color(0xFF72F4B7),
+    greenBright = Color(0xFFB4FFD9),
+    greenDim = Color(0xFF3EAD7E),
+    cyan = Color(0xFF72D9F1),
+    amber = Color(0xFFFFCA66),
+    red = Color(0xFFFF7A78),
+    white = Color(0xFFF0FBF8),
+    muted = Color(0xFFA2B8B7),
 )
 
 private val HighContrastAtcPalette = AtcPalette(
@@ -76,6 +76,7 @@ private val HighContrastAtcPalette = AtcPalette(
 
 private val LocalAtcPalette = staticCompositionLocalOf { StandardAtcPalette }
 
+@Suppress("UnusedReceiverParameter")
 val MaterialTheme.atcColors: AtcPalette
     @Composable
     @ReadOnlyComposable
@@ -123,66 +124,72 @@ private val AtcTypography = Typography(
     displayLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Black,
-        fontSize = 45.sp,
+        fontSize = 44.sp,
         lineHeight = 48.sp,
         letterSpacing = (-1.2).sp,
     ),
     headlineLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 30.sp,
-        lineHeight = 34.sp,
+        fontSize = 29.sp,
+        lineHeight = 35.sp,
     ),
     headlineMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 22.sp,
-        lineHeight = 26.sp,
+        fontSize = 23.sp,
+        lineHeight = 29.sp,
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 18.sp,
-        lineHeight = 22.sp,
+        fontSize = 20.sp,
+        lineHeight = 25.sp,
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 15.sp,
-        lineHeight = 19.sp,
+        fontSize = 16.sp,
+        lineHeight = 21.sp,
     ),
     bodyLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 21.sp,
+        fontSize = 16.sp,
+        lineHeight = 23.sp,
     ),
     bodyMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
+    ),
+    bodySmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 17.sp,
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 12.sp,
-        lineHeight = 16.sp,
+        fontSize = 13.sp,
+        lineHeight = 17.sp,
         letterSpacing = .5.sp,
     ),
     labelMedium = TextStyle(
         fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Bold,
-        fontSize = 11.sp,
-        lineHeight = 14.sp,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
         letterSpacing = .3.sp,
     ),
     labelSmall = TextStyle(
         fontFamily = FontFamily.Monospace,
         fontWeight = FontWeight.Medium,
-        fontSize = 9.sp,
-        lineHeight = 12.sp,
-        letterSpacing = .5.sp,
+        fontSize = 11.sp,
+        lineHeight = 15.sp,
+        letterSpacing = .35.sp,
     ),
 )
 

@@ -3,6 +3,9 @@ package com.stuart.atccontroller.ui
 import android.app.Application
 import android.os.SystemClock
 import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -16,13 +19,17 @@ import com.stuart.atccontroller.data.ManchesterContent
 import com.stuart.atccontroller.data.PlayerData
 import com.stuart.atccontroller.data.PlayerProgress
 import com.stuart.atccontroller.data.PlayerSettings
+import com.stuart.atccontroller.data.TrainingAcademy
 import com.stuart.atccontroller.data.TrainingState
 import com.stuart.atccontroller.data.unlockedAfterMissionCompletion
+import com.stuart.atccontroller.simulation.AtcSimulationEngine
 import com.stuart.atccontroller.simulation.CommandRejectionReason
 import com.stuart.atccontroller.simulation.GameEvent
-import java.util.concurrent.atomic.AtomicReference
+import com.stuart.atccontroller.simulation.GameSnapshot
+import com.stuart.atccontroller.simulation.GameStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -34,6 +41,13 @@ import org.junit.runner.RunWith
 class LiveGameViewModelTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val application = ApplicationProvider.getApplicationContext<Application>()
+    private val viewModelStore = ViewModelStore()
+    private var nextViewModelKey = 0
+
+    @After
+    fun clearViewModels() {
+        instrumentation.runOnMainSync(viewModelStore::clear)
+    }
 
     @Test
     fun persistedSettingsAreAppliedBeforeTheyBecomeInteractive() {
@@ -169,7 +183,7 @@ class LiveGameViewModelTest {
             first.onAction(GameAction.SelectMission(ManchesterContent.FIRST_MISSION_ID))
             first.onAction(GameAction.StartSelectedMission)
         }
-        waitUntil { persistence.savedSession.get() != null }
+        waitUntil { persistence.data.value.activeSession != null }
         val expectedObjectives = first.uiState.objectiveProgress
         val expectedUpcomingTraffic = first.uiState.upcomingTraffic
         val expectedStarForecast = first.uiState.starForecast
@@ -200,7 +214,7 @@ class LiveGameViewModelTest {
             first.onAction(GameAction.SelectMission(CoastalContent.FIRST_MISSION_ID))
             first.onAction(GameAction.StartSelectedMission)
         }
-        waitUntil { persistence.savedSession.get()?.scenarioId == CoastalContent.FIRST_MISSION_ID }
+        waitUntil { persistence.data.value.activeSession?.scenarioId == CoastalContent.FIRST_MISSION_ID }
 
         assertTrue(first.uiState.runways.all { it.id in setOf("09", "27", "18", "36") })
         assertTrue(first.uiState.fixes.any { it.name == "Harbour East" })
@@ -225,15 +239,17 @@ class LiveGameViewModelTest {
         val firstHandle = SavedStateHandle()
         val first = createViewModel(firstHandle, persistence)
         waitUntil { first.uiState.settingsLoaded }
+        val routeFixes = first.uiState.fixes.take(2).map { it.name }
+        assertEquals(2, routeFixes.size)
 
         instrumentation.runOnMainSync {
             first.onAction(GameAction.StartSelectedMission)
             first.onAction(GameAction.SelectFlightStrip("m01_a1"))
-            first.onAction(GameAction.DirectToFix("North-east Gate"))
-            first.onAction(GameAction.AppendFix("North Gate"))
+            first.onAction(GameAction.DirectToFix(routeFixes[0]))
+            first.onAction(GameAction.AppendFix(routeFixes[1]))
         }
         waitUntil {
-            persistence.savedSession.get()?.payload?.contains("|P|m01_a1|") == true
+            persistence.data.value.activeSession?.payload?.contains("|P|m01_a1|") == true
         }
 
         val recreatedPersistence = FakeGamePersistence(persistence.data.value)
@@ -298,7 +314,7 @@ class LiveGameViewModelTest {
     @Test
     fun tutorialRestoreAndUpdatesPreserveCompletedLessons() {
         val legacySelectionLesson = "SELECTION_AND_ROUTING"
-        val selectionLesson = "selection_and_routing"
+        val selectionLesson = TrainingAcademy.SELECTION_AND_ROUTING_LESSON_ID
         val persistence = FakeGamePersistence(
             PlayerData(
                 trainingState = TrainingState(
@@ -314,12 +330,12 @@ class LiveGameViewModelTest {
         instrumentation.runOnMainSync {
             viewModel.onAction(GameAction.StartSelectedMission)
         }
-        assertEquals(2, viewModel.uiState.tutorialStep)
+        assertEquals(1, viewModel.uiState.tutorialStep)
 
         instrumentation.runOnMainSync {
             viewModel.onAction(GameAction.AdvanceTutorial)
         }
-        waitUntil { persistence.data.value.trainingState.activeStep == 3 }
+        waitUntil { persistence.data.value.trainingState.activeStep == 2 }
         assertEquals(
             setOf("ALTITUDE"),
             persistence.data.value.trainingState.completedLessonIds,
@@ -360,7 +376,7 @@ class LiveGameViewModelTest {
         assertEquals(1, viewModel.uiState.training!!.stepIndex)
 
         instrumentation.runOnMainSync {
-            viewModel.onAction(GameAction.DirectToFix("North-east Gate"))
+            viewModel.onAction(GameAction.PrepareApproach)
         }
         assertEquals(2, viewModel.uiState.training!!.stepIndex)
 
@@ -377,7 +393,93 @@ class LiveGameViewModelTest {
         )
         assertFalse(
             "Exiting early must not mark a lesson complete",
-            "selection_and_routing" in persistence.data.value.trainingState.completedLessonIds,
+            TrainingAcademy.SELECTION_AND_ROUTING_LESSON_ID in
+                persistence.data.value.trainingState.completedLessonIds,
+        )
+    }
+
+    @Test
+    fun legacyFirstLessonSessionMigratesToApproachSetupAfterProcessDeath() {
+        val missionId = ManchesterContent.FIRST_MISSION_ID
+        val record = ActiveSessionRecord(
+            schemaVersion = 5,
+            scenarioId = missionId,
+            savedAtEpochMillis = 1L,
+            payload = buildString {
+                appendLine("replay-v5")
+                appendLine("D|A|$missionId")
+                append("S|0|1.0|true||selection_and_routing|3|legacy-attempt")
+            },
+        )
+        val persistence = FakeGamePersistence(
+            PlayerData(
+                activeSession = record,
+                trainingState = TrainingState(
+                    activeLessonId = "selection_and_routing",
+                    activeStep = 3,
+                ),
+            ),
+        )
+        val viewModel = createViewModel(
+            SavedStateHandle(mapOf("ui.screen" to AppScreen.GAME.name)),
+            persistence,
+        )
+
+        waitUntil { viewModel.uiState.screen == AppScreen.GAME && !viewModel.uiState.isRestoring }
+
+        assertFalse(viewModel.uiState.sessionPersistenceFailed)
+        assertEquals(TrainingAcademy.SELECTION_AND_ROUTING_LESSON_ID, viewModel.uiState.training!!.lessonId)
+        assertEquals(1, viewModel.uiState.training!!.stepIndex)
+        assertTrue(viewModel.uiState.training!!.prompt.contains("Set up approach"))
+        assertNotNull(persistence.data.value.activeSession)
+    }
+
+    @Test
+    fun firstMissionGuidedCommandFlowLandsEveryArrivalAndRecordsCompletion() {
+        val persistence = FakeGamePersistence(PlayerData())
+        val viewModel = createViewModel(SavedStateHandle(), persistence)
+        waitUntil { viewModel.uiState.settingsLoaded }
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.StartSelectedMission)
+        }
+        assertEquals(3, viewModel.uiState.training!!.stepCount)
+        assertTrue(viewModel.uiState.training!!.prompt.contains("NORTH 201"))
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.SelectAircraft("m01_a1"))
+        }
+        assertEquals(1, viewModel.uiState.training!!.stepIndex)
+        assertTrue(viewModel.uiState.training!!.prompt.contains("Set up approach"))
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.PrepareApproach)
+        }
+        assertEquals(2, viewModel.uiState.training!!.stepIndex)
+
+        instrumentation.runOnMainSync {
+            viewModel.onAction(GameAction.IssueClearance(ClearanceType.LAND))
+            advanceAndPublish(viewModel, targetTick = 550L)
+            viewModel.onAction(GameAction.SelectAircraft("m01_a2"))
+            viewModel.onAction(GameAction.PrepareApproach)
+            viewModel.onAction(GameAction.IssueClearance(ClearanceType.LAND))
+            advanceAndPublish(viewModel, targetTick = 1_150L)
+            viewModel.onAction(GameAction.SelectAircraft("m01_a3"))
+            viewModel.onAction(GameAction.PrepareApproach)
+            viewModel.onAction(GameAction.IssueClearance(ClearanceType.LAND))
+
+            val engine = liveEngine(viewModel)
+            val terminal = engine.advanceFixedSteps(5_000)
+            assertEquals(GameStatus.COMPLETED, terminal.status)
+            publishForTest(viewModel, terminal)
+        }
+
+        assertEquals(AppScreen.RESULTS, viewModel.uiState.screen)
+        assertTrue(viewModel.uiState.result!!.successful)
+        assertEquals(3, viewModel.uiState.result!!.safeArrivals)
+        waitUntil(timeoutMillis = 10_000L) { persistence.recordedMissionResults == 1 }
+        assertTrue(
+            ManchesterContent.missionIds[1] in persistence.data.value.progress.unlockedMissionIds,
         )
     }
 
@@ -397,7 +499,7 @@ class LiveGameViewModelTest {
             first.onAction(GameAction.SelectAircraft("m02_a1"))
         }
         waitUntil {
-            persistence.savedSession.get()?.payload?.contains("|altitude|1") == true
+            persistence.data.value.activeSession?.payload?.contains("|altitude|1") == true
         }
 
         val recreatedPersistence = FakeGamePersistence(persistence.data.value)
@@ -426,7 +528,7 @@ class LiveGameViewModelTest {
             first.onAction(GameAction.ToggleCustomApproachSetup)
             first.onAction(GameAction.StartCustomShift)
         }
-        waitUntil { persistence.savedSession.get()?.payload?.contains("D|C|ATC1.") == true }
+        waitUntil { persistence.data.value.activeSession?.payload?.contains("D|C|ATC1.") == true }
         val originalIdentity = first.uiState.configurationIdentity
 
         val recreatedPersistence = FakeGamePersistence(persistence.data.value)
@@ -587,9 +689,35 @@ class LiveGameViewModelTest {
     ): LiveGameViewModel {
         lateinit var result: LiveGameViewModel
         instrumentation.runOnMainSync {
-            result = LiveGameViewModel(application, savedStateHandle, persistence)
+            val factory = object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    LiveGameViewModel(application, savedStateHandle, persistence) as T
+            }
+            result = ViewModelProvider(viewModelStore, factory).get(
+                "live-game-${nextViewModelKey++}",
+                LiveGameViewModel::class.java,
+            )
         }
         return result
+    }
+
+    private fun advanceAndPublish(viewModel: LiveGameViewModel, targetTick: Long) {
+        val engine = liveEngine(viewModel)
+        val remainingSteps = (targetTick - engine.snapshot.tick).coerceAtLeast(0L).toInt()
+        publishForTest(viewModel, engine.advanceFixedSteps(remainingSteps))
+    }
+
+    private fun liveEngine(viewModel: LiveGameViewModel): AtcSimulationEngine {
+        val field = LiveGameViewModel::class.java.getDeclaredField("engine")
+        field.isAccessible = true
+        return checkNotNull(field.get(viewModel) as? AtcSimulationEngine)
+    }
+
+    private fun publishForTest(viewModel: LiveGameViewModel, snapshot: GameSnapshot) {
+        val method = LiveGameViewModel::class.java.getDeclaredMethod("publish", GameSnapshot::class.java)
+        method.isAccessible = true
+        method.invoke(viewModel, snapshot)
     }
 
     private fun waitUntil(timeoutMillis: Long = 5_000L, condition: () -> Boolean) {
@@ -608,7 +736,6 @@ class LiveGameViewModelTest {
 
 private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     val data = MutableStateFlow(initial)
-    val savedSession = AtomicReference<ActiveSessionRecord?>()
     var recordedMissionResults = 0
     var recordedEndlessHighScores = 0
     override val playerData = data.asStateFlow()
@@ -657,12 +784,10 @@ private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     }
 
     override suspend fun saveActiveSession(session: ActiveSessionRecord) {
-        savedSession.set(session)
         data.value = data.value.copy(activeSession = session)
     }
 
     override suspend fun clearActiveSession() {
-        savedSession.set(null)
         data.value = data.value.copy(activeSession = null)
     }
 
@@ -681,7 +806,6 @@ private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     }
 
     override suspend fun saveEndlessMilestone(milestone: EndlessMilestoneRecord) {
-        savedSession.set(null)
         data.value = data.value.copy(activeSession = null, endlessMilestone = milestone)
     }
 

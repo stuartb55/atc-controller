@@ -260,8 +260,6 @@ data class MissionUiModel(
     val campaignName: String = "",
     val airportName: String = "",
     val packOverview: String = "",
-    val sourceAttribution: String = "",
-    val contentDisclaimer: String = "",
     /** Null for modes such as endless that do not persist mission stars. */
     val bestStars: Int? = null,
     /** Null means no score was recorded on a legacy or unplayed mission; zero is valid. */

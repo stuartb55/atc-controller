@@ -135,7 +135,7 @@ class AtcControllerAppTest {
             }
         }
 
-        composeRule.onNodeWithText("2 movements remaining").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("2 movements remaining").assertIsDisplayed()
         composeRule.onNodeWithText("04:01 remaining").assertIsDisplayed()
         composeRule.onNodeWithText("1 star secured").assertIsDisplayed()
         composeRule.onNodeWithText("800 points to next star").assertIsDisplayed()
@@ -193,10 +193,12 @@ class AtcControllerAppTest {
             .onNode(hasContentDescription("NORTH 201, heading", substring = true))
             .performSemanticsAction(SemanticsActions.OnClick)
         composeRule.onNodeWithText("CONTROL").assertIsSelected()
-        composeRule.onNodeWithText("TARGET ALTITUDE").assertIsDisplayed()
-        composeRule.onNodeWithText("ROUTE SHORTCUT").assertDoesNotExist()
+        composeRule.onNodeWithText("SET UP APPROACH").assertIsDisplayed()
+        composeRule.onNodeWithText("CLEAR TO LAND").assertIsDisplayed()
+        composeRule.onNodeWithText("VECTOR CONTROLS").assertIsDisplayed()
+        composeRule.onNodeWithText("NAMED WAYPOINTS").assertDoesNotExist()
         composeRule.onNodeWithText("ROUTE").performClick().assertIsSelected()
-        composeRule.onNodeWithText("ROUTE SHORTCUT").assertIsDisplayed()
+        composeRule.onNodeWithText("NAMED WAYPOINTS").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("VECTOR CONTROLS").assertDoesNotExist()
         composeRule.onNodeWithText("EVENTS").performClick().assertIsSelected()
         composeRule.onNodeWithText("RADIO / EVENT FEED").assertIsDisplayed()

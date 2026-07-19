@@ -18,7 +18,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
@@ -36,34 +35,34 @@ fun AtcControllerApp(
     modifier: Modifier = Modifier,
 ) {
     BackHandler(enabled = state.screen != AppScreen.HOME) {
-        onAction(GameAction.Navigate(AppScreen.HOME))
+        appBackAction(state)?.let(onAction)
     }
 
     AtcBackground(modifier = modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize()) {
-        val screenContent: @Composable (AppScreen) -> Unit = { screen ->
-            when (screen) {
-                AppScreen.HOME -> HomeScreen(state, onAction)
-                AppScreen.MISSIONS -> MissionSelectScreen(state, onAction)
-                AppScreen.CUSTOM_SHIFT -> CustomShiftScreen(state.customShift, onAction)
-                AppScreen.GAME -> GameScreen(state, onAction)
-                AppScreen.MILESTONE -> EndlessMilestoneScreen(state, onAction)
-                AppScreen.RESULTS -> ResultsScreen(state, onAction)
-                AppScreen.SETTINGS -> SettingsScreen(state.settings, onAction)
-                AppScreen.ABOUT -> AboutScreen(onAction)
+            val screenContent: @Composable (AppScreen) -> Unit = { screen ->
+                when (screen) {
+                    AppScreen.HOME -> HomeScreen(state, onAction)
+                    AppScreen.MISSIONS -> MissionSelectScreen(state, onAction)
+                    AppScreen.CUSTOM_SHIFT -> CustomShiftScreen(state.customShift, onAction)
+                    AppScreen.GAME -> GameScreen(state, onAction)
+                    AppScreen.MILESTONE -> EndlessMilestoneScreen(state, onAction)
+                    AppScreen.RESULTS -> ResultsScreen(state, onAction)
+                    AppScreen.SETTINGS -> SettingsScreen(state.settings, onAction)
+                    AppScreen.ABOUT -> AboutScreen(onAction)
+                }
             }
-        }
 
-        if (state.settings.reducedMotion) {
-            Box(Modifier.fillMaxSize().safeDrawingPadding()) { screenContent(state.screen) }
-        } else {
-            Crossfade(
-                targetState = state.screen,
-                label = "screen transition",
-            ) { screen ->
-                Box(Modifier.fillMaxSize().safeDrawingPadding()) { screenContent(screen) }
+            if (state.settings.reducedMotion) {
+                Box(Modifier.fillMaxSize().safeDrawingPadding()) { screenContent(state.screen) }
+            } else {
+                Crossfade(
+                    targetState = state.screen,
+                    label = "screen transition",
+                ) { screen ->
+                    Box(Modifier.fillMaxSize().safeDrawingPadding()) { screenContent(screen) }
+                }
             }
-        }
             SessionStatusBanners(
                 isRestoring = state.isRestoring,
                 persistenceFailed = state.sessionPersistenceFailed,
@@ -74,6 +73,23 @@ fun AtcControllerApp(
             )
         }
     }
+}
+
+/** Keeps system Back consistent with the visible navigation hierarchy and safe game exit flow. */
+internal fun appBackAction(state: GameUiState): GameAction? = when (state.screen) {
+    AppScreen.HOME -> null
+    AppScreen.CUSTOM_SHIFT -> GameAction.Navigate(AppScreen.MISSIONS)
+    AppScreen.GAME -> when {
+        state.replay != null -> GameAction.Navigate(AppScreen.HOME)
+        state.abandonConfirmationVisible -> GameAction.CancelAbandonment
+        else -> GameAction.RequestAbandonment
+    }
+    AppScreen.MISSIONS,
+    AppScreen.MILESTONE,
+    AppScreen.RESULTS,
+    AppScreen.SETTINGS,
+    AppScreen.ABOUT,
+    -> GameAction.Navigate(AppScreen.HOME)
 }
 
 @Composable
@@ -139,7 +155,8 @@ private fun AtcBackground(
                 .fillMaxSize()
                 .semantics(mergeDescendants = false) {},
         ) {
-            val step = 64f
+            // Keep the atmospheric grid calm and physically consistent across screen densities.
+            val step = 64.dp.toPx()
             var x = 0f
             while (x < size.width) {
                 drawLine(colors.line.copy(alpha = .12f), Offset(x, 0f), Offset(x, size.height), 1f)

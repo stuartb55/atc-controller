@@ -1689,7 +1689,7 @@ class AtcSimulationEngine(
                 return performGoAround(state, 3_000.0, automatic = true, events = events)
             }
         }
-        var updated = if (inCapture) {
+        val updated = if (inCapture) {
             state.copy(status = AircraftStatus.APPROACH)
         } else if (state.status == AircraftStatus.APPROACH) {
             state.copy(status = AircraftStatus.INBOUND)
@@ -2194,9 +2194,39 @@ class AtcSimulationEngine(
             status = GameStatus.COMPLETED
             accumulatorSeconds = 0.0
             events += GameEvent.ScenarioCompleted(elapsedSeconds)
-        } else if (elapsedSeconds + EPSILON >= scenario.maxDurationSeconds) {
+        } else if (elapsedSeconds + EPSILON >= scenario.maxDurationSeconds &&
+            !canFinishActiveLandingRolls(objectives)
+        ) {
             fail(FailureReason.TIME_EXPIRED, events)
         }
+    }
+
+    /**
+     * A touchdown that happened before the deadline is already an irrevocable runway movement.
+     * Keep the deterministic clock running just long enough for those landing rolls to be scored;
+     * do not turn an aircraft visibly on the runway into a time-expired mission. The grace is
+     * deliberately narrow: all traffic must have spawned, every unresolved aircraft must already
+     * be rolling out, and those arrivals must be sufficient to meet the movement objectives.
+     */
+    private fun canFinishActiveLandingRolls(objectives: ScenarioObjectives): Boolean {
+        if (nextSpawnIndex != resolvedTraffic.size || strikes > objectives.maximumStrikes) return false
+        if (dynamicEventStates.values.any {
+                it.lifecycle !in setOf(DynamicEventLifecycle.RESOLVED, DynamicEventLifecycle.FAILED)
+            }
+        ) return false
+        if (weatherChangeStates.values.any { it.lifecycle != WeatherChangeLifecycle.APPLIED }) return false
+
+        val unresolved = aircraft.values.filterNot { it.status.isTerminal() }
+        if (unresolved.isEmpty() || unresolved.any { state ->
+                state.operation != FlightOperation.ARRIVAL || state.status != AircraftStatus.LANDING
+            }
+        ) return false
+
+        val projectedArrivals = score.safeArrivals + unresolved.size
+        val projectedDepartures = score.safeDepartures
+        return projectedArrivals + projectedDepartures >= objectives.safeMovementsToComplete &&
+            projectedArrivals >= objectives.arrivalsToLand &&
+            projectedDepartures >= objectives.departuresToExit
     }
 
     private fun fail(reason: FailureReason, events: MutableList<GameEvent>) {

@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Manchester Approach</string>
     <string name="cd_back">Back</string>
-    <string name="cd_radar_mark">Manchester Control radar mark</string>
+    <string name="cd_radar_mark">Manchester Approach radar mark</string>
     <plurals name="cd_star_rating">
         <item quantity="one">%1$d out of 3 stars</item>
         <item quantity="other">%1$d out of 3 stars</item>
@@ -17,16 +17,20 @@
     <string name="status_restoring_shift">Restoring saved shift…</string>
     <string name="warning_session_persistence">Saved-session storage is unavailable; this shift may not resume after closing.</string>
 
-    <string name="home_eyebrow">Manchester • EGCC</string>
-    <string name="home_title">Northern Radar</string>
+    <string name="home_eyebrow">ATC simulation • Manchester</string>
+    <string name="home_title">Manchester Approach</string>
     <string name="network">Network</string>
     <string name="offline">Offline</string>
-    <string name="home_hero">TAKE COMMAND\nOF THE SKY</string>
-    <string name="home_summary">Sequence arrivals, launch departures and keep Manchester moving — one precise clearance at a time.</string>
+    <string name="home_hero">CONTROL THE SKY,\nONE CLEAR COMMAND AT A TIME</string>
+    <string name="home_summary">Select aircraft, issue headings and clearances, and keep every flight safely separated in an approachable offline simulation.</string>
     <string name="choose_shift">Choose a shift</string>
     <string name="continue_game">Continue</string>
+    <string name="no_saved_shift">No paused shift yet. Choose a mission to begin.</string>
+    <string name="home_control_loop_title">New to air traffic control?</string>
+    <string name="home_control_loop_summary">Start with the guided first mission: select an aircraft, issue a command, then watch and adjust.</string>
+    <string name="open_controller_guide">Open controller guide</string>
     <string name="settings">Settings</string>
-    <string name="about_safety">About &amp; safety</string>
+    <string name="about_safety">Guide &amp; safety</string>
     <string name="version_offline">v1.0 • AIRPLANE MODE READY</string>
     <string name="selected_shift_preview">%1$s preview</string>
     <string name="aircraft_count_short">%1$d AC</string>
@@ -67,11 +71,22 @@
     <string name="visibility_km">%1$d km</string>
     <string name="duration">Duration</string>
     <string name="objectives">Objectives</string>
-    <string name="objective_item">• %1$s</string>
     <string name="not_available_short">—</string>
     <string name="begin_endless_shift">Begin endless shift</string>
-    <string name="start_briefing">Start briefing</string>
+    <string name="start_briefing">Start mission</string>
     <string name="cd_terminal_area_preview">Preview of the selected terminal area</string>
+    <string name="campaign_missions">Campaign missions</string>
+    <string name="campaign_missions_summary">Learn one control skill at a time, or build a custom practice shift.</string>
+    <string name="mission_path">Mission path</string>
+    <string name="mission_status_completed">Completed</string>
+    <string name="mission_status_lesson_available">Lesson available</string>
+    <string name="mission_status_locked">Locked</string>
+    <string name="mission_status_guided">Guided</string>
+    <string name="mission_status_ready">Ready</string>
+    <string name="mission_locked_symbol">×</string>
+    <string name="mission_focus_and_score">%1$s · %2$s</string>
+    <string name="start_without_guidance">Start without guidance</string>
+    <string name="complete_previous_mission">Complete the previous mission to unlock this shift.</string>
 
     <string name="preferences">Preferences</string>
     <string name="controller_settings">Controller settings</string>
@@ -103,11 +118,12 @@
     <string name="label_size">Label size</string>
     <string name="percent_value">%1$d%%</string>
     <string name="cd_radar_label_size">Radar label size</string>
+    <string name="settings_saved_automatically">Changes are saved automatically on this device.</string>
 
-    <string name="about">About</string>
-    <string name="manchester_control">Manchester Control</string>
-    <string name="about_heading">BUILT FOR THE\nLOVE OF THE SECTOR</string>
-    <string name="about_summary">A focused, offline strategy game about calm decisions in crowded skies.</string>
+    <string name="about">Controller guide</string>
+    <string name="manchester_control">Guide &amp; safety</string>
+    <string name="about_heading">LEARN THE FLOW.\nCONTROL WITH CONFIDENCE.</string>
+    <string name="about_summary">A quick reference for selecting aircraft, issuing commands and finishing a safe shift.</string>
     <string name="version_snapshot">VERSION 1.0 • DATA SNAPSHOT 2026–04–16</string>
     <string name="about_entertainment_title">Game use only</string>
     <string name="about_entertainment_body">This game uses simplified aircraft performance, separation, airspace and procedures. It must not be used for navigation, operational decisions or air traffic control training.</string>
@@ -116,6 +132,12 @@
     <string name="about_privacy_title">Privacy</string>
     <string name="about_privacy_body">Progress and settings are stored locally and may transfer using Android device transfer. The game has no accounts, advertising, analytics or app network access.</string>
     <string name="about_disclaimer">Manchester Airport, NATS and airline names or marks are not affiliated with or endorsements of this game. Aircraft callsigns are fictional.</string>
+    <string name="guide_basics_title">The control loop</string>
+    <string name="guide_basics_body">1. Tap an aircraft target or flight strip. 2. Issue a heading, altitude, speed or route command. 3. Watch the aircraft respond and adjust before traffic conflicts.</string>
+    <string name="guide_arrival_title">Land an arrival</string>
+    <string name="guide_arrival_body">Select the arrival, tap Set up approach, then Clear to land when the runway is safe. The mission completes automatically after every required movement finishes.</string>
+    <string name="guide_safety_title">Stay separated</string>
+    <string name="guide_safety_body">Keep aircraft at least 3 NM apart horizontally or 1,000 ft apart vertically. Amber warns of a predicted conflict; red means separation is already lost.</string>
 
     <string name="shift_complete">Shift complete</string>
     <string name="shift_ended">Shift ended</string>
@@ -141,7 +163,6 @@
     <string name="cd_simulation_speed">Simulation speed %1$d×</string>
     <string name="simulation_speed_value">%1$d×</string>
     <string name="radar_hint_select">Tap an aircraft to control</string>
-    <string name="radar_hint_route">Issue heading, level, speed or named waypoint commands</string>
     <string name="zoom_in">Zoom in</string>
     <string name="zoom_out">Zoom out</string>
     <string name="reset_map">Reset map</string>
@@ -161,17 +182,12 @@
     <string name="separation_lost_short">LOST</string>
     <string name="vector_controls">Vector controls</string>
     <string name="target_heading">Assigned heading</string>
-    <string name="heading_step">5° increments</string>
     <string name="target_altitude">Target altitude</string>
-    <string name="flight_level_value">%1$d FL</string>
     <string name="flight_level_code">FL%1$02d</string>
     <string name="aircraft_data_line">%1$s %2$s  %3$d kt  HDG %4$03d°</string>
     <string name="aircraft_heading_compact">HDG %1$03d°</string>
-    <string name="aircraft_type_phase">%1$s • %2$s</string>
-    <string name="feet_value">%1$s ft</string>
     <string name="target_speed">Target speed</string>
     <string name="knots_value">%1$d kt</string>
-    <string name="indicated_airspeed_short">IAS</string>
     <string name="clearance">Clearance</string>
     <string name="procedural_control">Procedural control</string>
     <string name="accept_inbound_handoff">Accept inbound handoff</string>
@@ -184,7 +200,6 @@
     <string name="clear_takeoff">Clear for take-off</string>
     <string name="clear_land">Clear to land</string>
     <string name="prepare_approach">Set up approach</string>
-    <string name="prepare_approach_caption">Route, descend and slow for runway %1$s</string>
     <string name="go_around">Go around</string>
     <string name="climb_feet">Climb %1$s ft</string>
     <string name="abandon_attempt">Abandon attempt</string>
@@ -204,7 +219,6 @@
     <string name="altitude_short">ALT</string>
     <string name="speed_short">SPD</string>
     <string name="heading_short">HDG</string>
-    <string name="flight_level_short">%1$d FL</string>
     <string name="heading_value">%1$03d°</string>
     <string name="phase_arrival">Arrival</string>
     <string name="phase_departure">Departure</string>
@@ -220,7 +234,6 @@
     <string name="resume_control">Resume control</string>
     <string name="restart_shift">Restart shift</string>
 
-    <string name="tutorial_progress">%1$d / %2$d</string>
     <string name="skip">Skip</string>
     <string name="exit_lesson">Exit lesson</string>
     <string name="training_step_kicker">Academy • step %1$d</string>
@@ -374,9 +387,17 @@
     <string name="assist_conflict_prediction">Conflict prediction</string>
     <string name="practice_result_not_ranked">Practice — result not recorded in ranked progress</string>
     <string name="configuration_identity">Configuration %1$s</string>
-    <string name="custom_shift_setup">Custom seeded shift</string>
+    <string name="custom_shift_setup">Build a custom shift</string>
     <string name="offline_practice">Offline practice</string>
     <string name="custom_shift_disclaimer">Configure a deterministic fictional shift. Practice and imported results never change campaign stars, service records, achievements, or endless scores.</string>
+    <string name="daily_challenge">Today’s challenge</string>
+    <string name="build_scenario">1 · Choose a sector and seed</string>
+    <string name="traffic_and_conditions">2 · Set traffic and conditions</string>
+    <string name="training_assists">3 · Choose training assists</string>
+    <string name="review_configuration">4 · Review and start</string>
+    <string name="configuration_copied">Configuration copied</string>
+    <string name="cd_previous_option">Previous %1$s option</string>
+    <string name="cd_next_option">Next %1$s option</string>
     <string name="seed">Seed</string>
     <string name="traffic_density">Traffic density</string>
     <string name="arrival_mix">Arrival mix</string>
@@ -446,6 +467,8 @@
     <string name="flight_strip_phase_clearance">%1$s · %2$s</string>
     <string name="flight_strip_runway_fuel">%1$s · %2$d%% fuel</string>
     <string name="flight_strip_wake_spacing">wake %1$ds / %2$ds required</string>
+    <string name="runway_status_clear">Runway %1$s clear</string>
+    <string name="runway_status_occupied">Runway %1$s occupied</string>
     <string name="cd_flight_strip">%1$s, %2$s, runway %3$s, fuel %4$d%%, %5$s, %6$s</string>
     <string name="clearance_approach_runway">Approach runway %1$s</string>
     <string name="clearance_line_up_runway">Line up and wait runway %1$s</string>
@@ -577,7 +600,7 @@
     <string name="weather_change_notice">Runway change to %1$s in %2$ds</string>
     <string name="weather_display_only">Conditions are advisory in this mission and do not affect the simulation.</string>
     <string name="training_action_gate">Use the focusable game control to complete this action. Valid actions advance automatically.</string>
-    <string name="practice_lesson">Practice focused lesson</string>
+    <string name="practice_lesson">Play guided lesson</string>
     <string name="training_title_format">%1$s Academy</string>
     <string name="training_aircraft_fallback">the highlighted aircraft</string>
     <string name="training_prompt_select">Select %1$s using its radar target or flight strip.</string>

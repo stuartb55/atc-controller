@@ -72,6 +72,7 @@ import kotlin.math.ceil
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -185,6 +186,7 @@ class LiveGameViewModel internal constructor(
             Vec2(fix.position.x, fix.position.y) to fix.displayName
         }
 
+    @Suppress("unused") // Android's default saved-state ViewModel factory invokes this reflectively.
     constructor(application: Application, savedStateHandle: SavedStateHandle) : this(
         application = application,
         savedStateHandle = savedStateHandle,
@@ -259,7 +261,7 @@ class LiveGameViewModel internal constructor(
         }
         viewModelScope.launch {
             while (isActive) {
-                delay(TICK_MILLIS)
+                delay(TICK_MILLIS.milliseconds)
                 if (replayController != null) {
                     if (uiState.replay?.isPlaying == true) {
                         advanceReplay(uiState.replay?.speed ?: 1)
@@ -712,14 +714,11 @@ class LiveGameViewModel internal constructor(
         suppressPersistedSession = false
         trainingRejectionMessage = null
 
-        val lesson = TrainingAcademy.lessonFor(content.tutorialFocus)
         val showTutorial = descriptor is SessionDescriptor.Training ||
             (descriptor.selectionId in ContentRegistry.firstMissionIds &&
                 !playerData.progress.tutorialCompleted)
         val tutorialStep = playerData.trainingState
-            .takeIf { state -> state.matches(lesson, content.tutorialFocus) }
-            ?.activeStep
-            ?.takeIf { step -> lesson != null && step in lesson.steps.indices }
+            .restoredStepIndex(content.tutorialFocus)
             ?: 0
         pausedForTutorial = showTutorial
         uiState = uiState.copy(
@@ -819,14 +818,9 @@ class LiveGameViewModel internal constructor(
             trainingRejectionMessage = null
             val lesson = TrainingAcademy.lessonFor(restored.content.tutorialFocus)
             val savedTutorialStep = saved.trainingStep
-                ?.takeIf { step ->
-                    lesson != null && saved.trainingLessonId == lesson.id &&
-                        step in lesson.steps.indices
-                }
-            val persistedTutorialStep = playerData.trainingState
-                .takeIf { state -> state.matches(lesson, restored.content.tutorialFocus) }
-                ?.activeStep
                 ?.takeIf { step -> lesson != null && step in lesson.steps.indices }
+            val persistedTutorialStep = playerData.trainingState
+                .restoredStepIndex(restored.content.tutorialFocus)
             uiState = uiState.copy(
                 screen = AppScreen.GAME,
                 selectedMissionId = saved.descriptor.selectionId,
@@ -859,11 +853,12 @@ class LiveGameViewModel internal constructor(
         tutorialCompleted: Boolean,
     ): RestoredEngine {
         val content = saved.descriptor.content()
-        val maximumTick = (content.maxDurationSeconds * TICKS_PER_SECOND).toLong() + 1L
+        val simulationScenario = content.toSimulationScenario()
+        val maximumTick = ActiveSessionRestorePolicy.maximumRestorableTick(simulationScenario)
         require(saved.savedTick in 0..maximumTick) { "Saved tick is outside the scenario" }
         require(saved.entries.size <= MAX_REPLAY_ENTRIES) { "Replay log is too large" }
 
-        val restoredEngine = AtcSimulationEngine(content.toSimulationScenario())
+        val restoredEngine = AtcSimulationEngine(simulationScenario)
         var snapshot = restoredEngine.submit(PlayerCommand.Start)
         var replayTick = snapshot.tick
         for (entry in saved.entries) {
@@ -875,7 +870,7 @@ class LiveGameViewModel internal constructor(
             replayTick = snapshot.tick
         }
         snapshot = advanceForRestore(restoredEngine, snapshot, saved.savedTick - replayTick)
-        require(snapshot.tick == saved.savedTick && snapshot.status == GameStatus.RUNNING) {
+        require(ActiveSessionRestorePolicy.canRestore(snapshot, saved.savedTick, simulationScenario)) {
             "Saved simulation point cannot be reconstructed"
         }
         snapshot = restoredEngine.submit(PlayerCommand.SetSimulationSpeed(saved.speedMultiplier))
@@ -1707,7 +1702,7 @@ class LiveGameViewModel internal constructor(
         )
         persistUiState()
         pendingProgression = when {
-            completed && !isEndless && descriptor.selectionId in ContentRegistry.missionIds -> {
+            completed && descriptor.selectionId in ContentRegistry.missionIds -> {
                 val safeMovements = snapshot.score.safeArrivals + snapshot.score.safeDepartures
                 val maximumEfficiency = safeMovements *
                     (activeContent?.scoring?.maximumRouteEfficiencyBonusPoints ?: 0)
@@ -2660,11 +2655,11 @@ class LiveGameViewModel internal constructor(
             }
             val paused = checkNotNull(metadata[3].toBooleanStrictOrNull())
             val selectedAircraftId = metadata[4].takeIf(String::isNotBlank)
-            val trainingLessonId = metadata.getOrNull(5)?.takeIf(String::isNotBlank)
-            val trainingStep = metadata.getOrNull(6)?.takeIf(String::isNotBlank)?.let { value ->
+            val persistedTrainingLessonId = metadata.getOrNull(5)?.takeIf(String::isNotBlank)
+            val persistedTrainingStep = metadata.getOrNull(6)?.takeIf(String::isNotBlank)?.let { value ->
                 checkNotNull(value.toIntOrNull()).also { require(it in 0 until MAX_TRAINING_STEPS) }
             }
-            require((trainingLessonId == null) == (trainingStep == null))
+            require((persistedTrainingLessonId == null) == (persistedTrainingStep == null))
             val attemptId = metadata.getOrNull(7)?.takeIf(String::isNotBlank)
             require(attemptId == null || attemptId.length <= 100)
             val entries = lines.drop(3).map(::parseReplayEntry)
@@ -2674,11 +2669,16 @@ class LiveGameViewModel internal constructor(
             val content = descriptor.content()
             require(record.scenarioId == content.id)
             val trainingLesson = TrainingAcademy.lessonFor(content.tutorialFocus)
-            if (trainingLessonId != null) {
-                require(trainingLesson != null)
-                require(trainingLessonId == trainingLesson.id)
-                require(trainingStep in trainingLesson.steps.indices)
+            val trainingStep = persistedTrainingStep?.let { step ->
+                checkNotNull(
+                    TrainingAcademy.restoredStepIndex(
+                        content.tutorialFocus,
+                        persistedTrainingLessonId,
+                        step,
+                    ),
+                )
             }
+            val trainingLessonId = trainingStep?.let { checkNotNull(trainingLesson).id }
             if (descriptor is SessionDescriptor.Training) {
                 require(trainingLessonId != null)
             }
@@ -2984,7 +2984,6 @@ class LiveGameViewModel internal constructor(
     companion object {
         private const val TICK_MILLIS = 100L
         private const val TICK_SECONDS = 0.1
-        private const val TICKS_PER_SECOND = 10
         private const val CHECKPOINT_TICKS = 50L
         private const val RESTORE_STEP_CHUNK = 100
         private const val TRAIL_POINT_COUNT = 10
@@ -3175,8 +3174,6 @@ class LiveGameViewModel internal constructor(
                 campaignName = pack.displayName,
                 airportName = airport.displayName,
                 packOverview = pack.overview,
-                sourceAttribution = airport.source.attribution,
-                contentDisclaimer = airport.source.disclaimer,
                 bestStars = bestStars,
                 bestScore = bestScore,
                 completed = completed,
@@ -3359,10 +3356,9 @@ private fun AircraftState.matches(target: TrainingTargetOperation?): Boolean = w
     null -> true
 }
 
-private fun TrainingState.matches(
-    lesson: com.stuart.atccontroller.data.TrainingLessonDefinition?,
+private fun TrainingState.restoredStepIndex(
     focus: TutorialFocus,
-): Boolean = lesson != null && activeLessonId in setOf(lesson.id, focus.name)
+): Int? = TrainingAcademy.restoredStepIndex(focus, activeLessonId, activeStep)
 
 private fun Clearance.toUiText(status: AircraftStatus, resources: Resources): String = when (this) {
     Clearance.None -> when (status) {

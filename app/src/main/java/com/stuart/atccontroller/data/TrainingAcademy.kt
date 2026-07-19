@@ -38,12 +38,19 @@ data class TrainingLessonDefinition(
 }
 
 object TrainingAcademy {
+    const val SELECTION_AND_ROUTING_LESSON_ID = "selection_and_routing_v2"
+
+    private val legacySelectionAndRoutingLessonIds = setOf(
+        "selection_and_routing",
+        TutorialFocus.SELECTION_AND_ROUTING.name,
+    )
+
     val lessons: List<TrainingLessonDefinition> = listOf(
         lesson(
+            SELECTION_AND_ROUTING_LESSON_ID,
             TutorialFocus.SELECTION_AND_ROUTING,
             step("select_arrival", TrainingAction.SELECT_AIRCRAFT, TrainingTargetOperation.ARRIVAL),
-            step("route_arrival", TrainingAction.SET_ROUTE, TrainingTargetOperation.ARRIVAL),
-            step("set_altitude", TrainingAction.SET_ALTITUDE, TrainingTargetOperation.ARRIVAL),
+            step("prepare_approach", TrainingAction.PREPARE_APPROACH, TrainingTargetOperation.ARRIVAL),
             step("clear_land", TrainingAction.CLEAR_TO_LAND, TrainingTargetOperation.ARRIVAL),
         ),
         lesson(
@@ -119,11 +126,45 @@ object TrainingAcademy {
     fun lessonFor(focus: TutorialFocus): TrainingLessonDefinition? =
         lessons.firstOrNull { it.focus == focus }
 
+    /**
+     * Restores a persisted lesson cursor without allowing an older lesson layout to skip a newly
+     * required action. Version one stored raw list indices for select, route, altitude, and land.
+     * Every in-progress legacy step after selection resumes at the combined approach setup step.
+     */
+    fun restoredStepIndex(
+        focus: TutorialFocus,
+        persistedLessonId: String?,
+        persistedStepIndex: Int,
+    ): Int? {
+        val lesson = lessonFor(focus) ?: return null
+        if (persistedLessonId == lesson.id) {
+            return persistedStepIndex.takeIf { it in lesson.steps.indices }
+        }
+        if (focus == TutorialFocus.SELECTION_AND_ROUTING &&
+            persistedLessonId in legacySelectionAndRoutingLessonIds
+        ) {
+            return when (persistedStepIndex) {
+                0 -> 0
+                in 1..3 -> 1
+                else -> null
+            }
+        }
+        return persistedStepIndex.takeIf {
+            persistedLessonId == focus.name && it in lesson.steps.indices
+        }
+    }
+
     private fun lesson(
         focus: TutorialFocus,
         vararg steps: TrainingStepDefinition,
+    ) = lesson(focus.name.lowercase(), focus, *steps)
+
+    private fun lesson(
+        id: String,
+        focus: TutorialFocus,
+        vararg steps: TrainingStepDefinition,
     ) = TrainingLessonDefinition(
-        id = focus.name.lowercase(),
+        id = id,
         focus = focus,
         steps = steps.toList(),
     )

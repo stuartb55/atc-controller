@@ -3,6 +3,7 @@ package com.stuart.atccontroller.data
 import com.stuart.atccontroller.simulation.FlightOperation
 import com.stuart.atccontroller.simulation.AircraftStatus
 import com.stuart.atccontroller.simulation.AtcSimulationEngine
+import com.stuart.atccontroller.simulation.GameEvent
 import com.stuart.atccontroller.simulation.GameStatus
 import com.stuart.atccontroller.simulation.PlayerCommand
 import com.stuart.atccontroller.simulation.Route
@@ -45,6 +46,8 @@ class ManchesterContentTest {
 
         assertEquals(GameStatus.COMPLETED, engine.snapshot.status)
         assertEquals(3, engine.snapshot.score.safeArrivals)
+        assertTrue(engine.snapshot.events.any { it is GameEvent.ScenarioCompleted })
+        assertEquals(0, engine.snapshot.objectives.minimumScore)
     }
 
     @Test

@@ -403,6 +403,84 @@ class AtcSimulationEngineTest {
     }
 
     @Test
+    fun `arrival that touched down by deadline finishes rollout and completes mission`() {
+        val runway = runway()
+        val arrival = arrival(
+            id = "A",
+            position = runway.threshold,
+            heading = runway.headingDegrees,
+            altitude = 0.0,
+            speed = 60.0,
+        ).copy(
+            status = AircraftStatus.LANDING,
+            runwayId = runway.id,
+            clearance = Clearance.Land(runway.id),
+            statusElapsedSeconds = AircraftType.LIGHT.landingRollSeconds - .2,
+        )
+        val engine = AtcSimulationEngine(
+            scenario(
+                traffic = listOf(ScheduledAircraft(0.0, arrival)),
+                objectives = ScenarioObjectives(
+                    safeMovementsToComplete = 1,
+                    arrivalsToLand = 1,
+                    completeWhenAllTrafficResolved = true,
+                ),
+                maxDuration = .1,
+            ),
+        )
+        engine.submit(PlayerCommand.Start)
+
+        val atDeadline = engine.advanceFixedSteps()
+
+        assertEquals(GameStatus.RUNNING, atDeadline.status)
+        assertEquals(AircraftStatus.LANDING, atDeadline.aircraft.single().status)
+        assertEquals(null, atDeadline.failureReason)
+
+        val completed = engine.advanceFixedSteps()
+
+        assertEquals(GameStatus.COMPLETED, completed.status)
+        assertEquals(AircraftStatus.LANDED, completed.aircraft.single().status)
+        assertEquals(1, completed.score.safeArrivals)
+        assertTrue(completed.events.any { it is GameEvent.Landed })
+        assertTrue(completed.events.any { it is GameEvent.ScenarioCompleted })
+        assertFalse(completed.events.any { it is GameEvent.ScenarioFailed })
+    }
+
+    @Test
+    fun `landing rollout does not defer timeout while required traffic remains airborne`() {
+        val runway = runway()
+        val rolling = arrival(
+            id = "ROLLING",
+            position = runway.threshold,
+            heading = runway.headingDegrees,
+            altitude = 0.0,
+            speed = 60.0,
+        ).copy(
+            status = AircraftStatus.LANDING,
+            runwayId = runway.id,
+            clearance = Clearance.Land(runway.id),
+            statusElapsedSeconds = AircraftType.LIGHT.landingRollSeconds - .2,
+        )
+        val airborne = arrival("AIRBORNE")
+        val engine = AtcSimulationEngine(
+            scenario(
+                traffic = listOf(
+                    ScheduledAircraft(0.0, rolling),
+                    ScheduledAircraft(0.0, airborne),
+                ),
+                maxDuration = .1,
+            ),
+        )
+        engine.submit(PlayerCommand.Start)
+
+        val expired = engine.advanceFixedSteps()
+
+        assertEquals(GameStatus.FAILED, expired.status)
+        assertEquals(FailureReason.TIME_EXPIRED, expired.failureReason)
+        assertTrue(expired.aircraft.any { it.status == AircraftStatus.INBOUND })
+    }
+
+    @Test
     fun `seeded jitter yields identical spawn sequence and snapshots`() {
         val traffic = listOf(
             ScheduledAircraft(2.0, holdingDeparture("A"), spawnJitterSeconds = 1.5),

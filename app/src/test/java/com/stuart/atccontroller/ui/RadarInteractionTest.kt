@@ -67,4 +67,32 @@ class RadarInteractionTest {
         assertFalse(routeTerminalIsAllowed(RouteTerminalTarget.AssignedRunway("23R"), "23R", false))
         assertTrue(routeTerminalIsAllowed(RouteTerminalTarget.NavigationFix("NORTH"), null, false))
     }
+
+    @Test
+    fun missionRailFocusesTheNextIncompleteObjective() {
+        val completed = objective("safe", ObjectiveProgressKind.SAFE_MOVEMENTS, 2, true)
+        val active = objective("arrivals", ObjectiveProgressKind.ARRIVALS, 1, false)
+        val later = objective("strikes", ObjectiveProgressKind.STRIKES, 0, false)
+
+        assertEquals(active, focusedObjective(listOf(completed, active, later)))
+        assertEquals(completed, focusedObjective(listOf(completed)))
+        assertNull(focusedObjective(emptyList()))
+    }
+
+    @Test
+    fun radarFeedbackOnlyShowsRecentCommandAcknowledgements() {
+        val old = EventFeedEntryUiModel(1, 4, "old")
+        val recent = EventFeedEntryUiModel(2, 12, "cleared to land")
+
+        assertEquals(recent, latestFeedbackEvent(listOf(old, recent), elapsedSeconds = 18))
+        assertNull(latestFeedbackEvent(listOf(old, recent), elapsedSeconds = 21))
+        assertNull(latestFeedbackEvent(listOf(recent), elapsedSeconds = 11))
+    }
+
+    private fun objective(
+        id: String,
+        kind: ObjectiveProgressKind,
+        current: Int,
+        passed: Boolean,
+    ) = ObjectiveProgressUiModel(id, kind, current, target = 2, passed = passed)
 }

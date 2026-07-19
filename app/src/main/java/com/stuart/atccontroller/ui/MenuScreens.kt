@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -59,6 +60,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -101,19 +103,12 @@ fun HomeScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         color = colors.muted,
                     )
                     Spacer(Modifier.height(16.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        PrimaryActionButton(
-                            text = stringResource(R.string.choose_shift),
-                            onClick = { onAction(GameAction.Navigate(AppScreen.MISSIONS)) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        SecondaryActionButton(
-                            text = stringResource(R.string.continue_game),
-                            onClick = { onAction(GameAction.ContinueLastGame) },
-                            modifier = Modifier.width(120.dp),
-                            enabled = state.canContinue,
-                        )
-                    }
+                    HomeActionButtons(state = state, onAction = onAction, stacked = true)
+                }
+                item {
+                    HomeGuideCard(
+                        onOpenGuide = { onAction(GameAction.Navigate(AppScreen.ABOUT)) },
+                    )
                 }
                 item {
                     HomeSectorCard(
@@ -165,22 +160,18 @@ fun HomeScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(if (compact) 14.dp else 24.dp))
-                Row(
-                    modifier = Modifier.widthIn(max = 570.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    PrimaryActionButton(
-                        text = stringResource(R.string.choose_shift),
-                        onClick = { onAction(GameAction.Navigate(AppScreen.MISSIONS)) },
-                        modifier = Modifier.weight(1f),
+                if (!compact) {
+                    HomeGuideCard(
+                        onOpenGuide = { onAction(GameAction.Navigate(AppScreen.ABOUT)) },
+                        modifier = Modifier.widthIn(max = 570.dp),
                     )
-                    SecondaryActionButton(
-                        text = stringResource(R.string.continue_game),
-                        onClick = { onAction(GameAction.ContinueLastGame) },
-                        modifier = Modifier.width(132.dp),
-                        enabled = state.canContinue,
-                    )
+                    Spacer(Modifier.height(16.dp))
                 }
+                HomeActionButtons(
+                    state = state,
+                    onAction = onAction,
+                    modifier = Modifier.widthIn(max = 570.dp),
+                )
                 Spacer(Modifier.weight(1f))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -205,6 +196,89 @@ fun HomeScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     .weight(.72f)
                     .fillMaxHeight(),
             )
+        }
+    }
+}
+
+@Composable
+private fun HomeActionButtons(
+    state: GameUiState,
+    onAction: (GameAction) -> Unit,
+    modifier: Modifier = Modifier,
+    stacked: Boolean = false,
+) {
+    if (stacked) {
+        Column(modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            PrimaryActionButton(
+                text = stringResource(R.string.choose_shift),
+                onClick = { onAction(GameAction.Navigate(AppScreen.MISSIONS)) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            SecondaryActionButton(
+                text = stringResource(R.string.continue_game),
+                onClick = { onAction(GameAction.ContinueLastGame) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = state.canContinue,
+            )
+            if (!state.canContinue) {
+                Text(
+                    stringResource(R.string.no_saved_shift),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.atcColors.muted,
+                )
+            }
+        }
+    } else {
+        Row(modifier, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            PrimaryActionButton(
+                text = stringResource(R.string.choose_shift),
+                onClick = { onAction(GameAction.Navigate(AppScreen.MISSIONS)) },
+                modifier = Modifier.weight(1f),
+            )
+            SecondaryActionButton(
+                text = stringResource(R.string.continue_game),
+                onClick = { onAction(GameAction.ContinueLastGame) },
+                modifier = Modifier.width(142.dp),
+                enabled = state.canContinue,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeGuideCard(
+    onOpenGuide: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = colors.cyan.copy(alpha = .07f),
+        border = BorderStroke(1.dp, colors.cyan.copy(alpha = .38f)),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                stringResource(R.string.home_control_loop_title),
+                style = MaterialTheme.typography.titleMedium,
+                color = colors.white,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                stringResource(R.string.home_control_loop_summary),
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.muted,
+            )
+            TextButton(
+                onClick = onOpenGuide,
+                modifier = Modifier.align(Alignment.End).heightIn(min = 48.dp),
+                colors = ButtonDefaults.textButtonColors(contentColor = colors.cyan),
+            ) {
+                Text(
+                    stringResource(R.string.open_controller_guide).uppercase(),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
         }
     }
 }
@@ -392,10 +466,9 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     )
                 },
             )
-            SecondaryActionButton(
-                text = stringResource(R.string.custom_shift_setup),
-                onClick = { onAction(GameAction.Navigate(AppScreen.CUSTOM_SHIFT)) },
-                modifier = Modifier.fillMaxWidth(),
+            Spacer(Modifier.height(10.dp))
+            MissionModeBanner(
+                onCustomShift = { onAction(GameAction.Navigate(AppScreen.CUSTOM_SHIFT)) },
             )
             Spacer(Modifier.height(if (compact) 12.dp else 20.dp))
             if (narrow) {
@@ -404,25 +477,13 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     item {
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 240.dp),
-                            shape = RoundedCornerShape(18.dp),
-                            color = colors.panel.copy(alpha = .92f),
-                            border = BorderStroke(1.dp, colors.line),
-                        ) {
-                            LazyColumn(
-                                contentPadding = PaddingValues(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                items(state.missions, key = { it.id }) { mission ->
-                                    MissionListItem(
-                                        mission = mission,
-                                        selected = mission.id == state.selectedMissionId,
-                                        onClick = { onAction(GameAction.SelectMission(mission.id)) },
-                                    )
-                                }
-                            }
-                        }
+                        MissionPathPanel(
+                            modifier = Modifier.fillMaxWidth(),
+                            missions = state.missions,
+                            selectedMissionId = state.selectedMissionId,
+                            onSelectMission = { onAction(GameAction.SelectMission(it)) },
+                            scrollContent = false,
+                        )
                     }
                     state.selectedMission?.let { mission ->
                         item {
@@ -443,25 +504,12 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                 Modifier.weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(if (compact) 14.dp else 22.dp),
             ) {
-                Surface(
+                MissionPathPanel(
                     modifier = Modifier.width(if (compact) 240.dp else 290.dp).fillMaxHeight(),
-                    shape = RoundedCornerShape(18.dp),
-                    color = colors.panel.copy(alpha = .92f),
-                    border = BorderStroke(1.dp, colors.line),
-                ) {
-                    LazyColumn(
-                        contentPadding = PaddingValues(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        items(state.missions, key = { it.id }) { mission ->
-                            MissionListItem(
-                                mission = mission,
-                                selected = mission.id == state.selectedMissionId,
-                                onClick = { onAction(GameAction.SelectMission(mission.id)) },
-                            )
-                        }
-                    }
-                }
+                    missions = state.missions,
+                    selectedMissionId = state.selectedMissionId,
+                    onSelectMission = { onAction(GameAction.SelectMission(it)) },
+                )
 
                 state.selectedMission?.let { mission ->
                     MissionBriefing(
@@ -480,15 +528,119 @@ fun MissionSelectScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
 }
 
 @Composable
+private fun MissionModeBanner(onCustomShift: () -> Unit) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = colors.panelRaised.copy(alpha = .8f),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(12.dp)) {
+            val description: @Composable () -> Unit = {
+                Column {
+                    Text(
+                        stringResource(R.string.campaign_missions),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.white,
+                    )
+                    Text(
+                        stringResource(R.string.campaign_missions_summary),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted,
+                    )
+                }
+            }
+            if (maxWidth < 520.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    description()
+                    SecondaryActionButton(
+                        text = stringResource(R.string.custom_shift_setup),
+                        onClick = onCustomShift,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { description() }
+                    Spacer(Modifier.width(16.dp))
+                    SecondaryActionButton(
+                        text = stringResource(R.string.custom_shift_setup),
+                        onClick = onCustomShift,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MissionPathPanel(
+    missions: List<MissionUiModel>,
+    selectedMissionId: String,
+    onSelectMission: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    scrollContent: Boolean = true,
+) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        color = colors.panel.copy(alpha = .94f),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Column(
+            Modifier
+                .then(if (scrollContent) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                .padding(8.dp),
+        ) {
+            Text(
+                stringResource(R.string.mission_path).uppercase(),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.muted,
+            )
+            if (scrollContent) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(missions, key = { it.id }) { mission ->
+                        MissionListItem(
+                            mission = mission,
+                            selected = mission.id == selectedMissionId,
+                            onClick = { onSelectMission(mission.id) },
+                        )
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    missions.forEach { mission ->
+                        MissionListItem(
+                            mission = mission,
+                            selected = mission.id == selectedMissionId,
+                            onClick = { onSelectMission(mission.id) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) -> Unit) {
     val colors = MaterialTheme.atcColors
     val context = LocalContext.current
     val shareChooserTitle = stringResource(R.string.share_configuration)
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    val copiedMessage = stringResource(R.string.configuration_copied)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val horizontalPadding = if (maxWidth < 480.dp) 16.dp else 24.dp
+        LazyColumn(
+            modifier = Modifier.align(Alignment.TopCenter).fillMaxHeight().widthIn(max = 760.dp),
+            contentPadding = PaddingValues(horizontal = horizontalPadding, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
         item {
             ScreenHeader(
                 eyebrow = stringResource(R.string.offline_practice),
@@ -502,6 +654,9 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.muted,
             )
+        }
+        item {
+            SectionLabel(stringResource(R.string.daily_challenge))
         }
         item {
             Surface(
@@ -538,6 +693,9 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
             }
         }
         item {
+            SectionLabel(stringResource(R.string.build_scenario))
+        }
+        item {
             OutlinedTextField(
                 value = configuration.seed,
                 onValueChange = { onAction(GameAction.SetCustomSeed(it.filter(Char::isDigit).take(18))) },
@@ -558,6 +716,9 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
                 style = MaterialTheme.typography.labelSmall,
                 color = colors.muted,
             )
+        }
+        item {
+            SectionLabel(stringResource(R.string.traffic_and_conditions))
         }
         item {
             ConfigCycleRow(
@@ -608,6 +769,14 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
             )
         }
         item {
+            SectionLabel(stringResource(R.string.training_assists))
+        }
+        item {
+            SettingToggle(
+                stringResource(R.string.assist_route_snapping),
+                stringResource(R.string.assist_practice_only),
+                configuration.routeSnapping,
+            ) { onAction(GameAction.ToggleCustomRouteSnapping) }
             SettingToggle(
                 stringResource(R.string.assist_approach_setup),
                 stringResource(R.string.assist_practice_only),
@@ -618,6 +787,9 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
                 stringResource(R.string.assist_practice_only),
                 configuration.conflictPrediction,
             ) { onAction(GameAction.ToggleCustomConflictPrediction) }
+        }
+        item {
+            SectionLabel(stringResource(R.string.review_configuration))
         }
         item {
             Surface(
@@ -666,6 +838,7 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
                         clipboard.setPrimaryClip(
                             ClipData.newPlainText("ATC shift configuration", configuration.shareCode),
                         )
+                        Toast.makeText(context, copiedMessage, Toast.LENGTH_SHORT).show()
                     },
                     Modifier.weight(1f),
                 )
@@ -701,23 +874,24 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
             )
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SecondaryActionButton(
-                    stringResource(R.string.use_ranked_preset),
-                    { onAction(GameAction.UseRankedSeededPreset) },
-                    Modifier.weight(1f),
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 PrimaryActionButton(
-                    if (configuration.ranked) {
+                    text = if (configuration.ranked) {
                         stringResource(R.string.start_ranked_seeded)
                     } else {
                         stringResource(R.string.start_practice)
                     },
-                    { onAction(GameAction.StartCustomShift) },
-                    Modifier.weight(1f),
+                    onClick = { onAction(GameAction.StartCustomShift) },
+                    modifier = Modifier.fillMaxWidth(),
                     enabled = configuration.seed.isNotBlank(),
                 )
+                SecondaryActionButton(
+                    text = stringResource(R.string.use_ranked_preset),
+                    onClick = { onAction(GameAction.UseRankedSeededPreset) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
+        }
         }
     }
 }
@@ -813,17 +987,29 @@ private fun ConfigCycleRow(
     onNext: () -> Unit,
 ) {
     val colors = MaterialTheme.atcColors
-    Surface(color = colors.panel, shape = RoundedCornerShape(10.dp)) {
+    val previousDescription = stringResource(R.string.cd_previous_option, label)
+    val nextDescription = stringResource(R.string.cd_next_option, label)
+    Surface(
+        color = colors.panel,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
+            Modifier.fillMaxWidth().heightIn(min = 68.dp).padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(label, style = MaterialTheme.typography.labelSmall, color = colors.muted)
                 Text(value, style = MaterialTheme.typography.titleMedium, color = colors.white)
             }
-            TextButton(onClick = onPrevious) { Text("−") }
-            TextButton(onClick = onNext) { Text("+") }
+            TextButton(
+                onClick = onPrevious,
+                modifier = Modifier.size(52.dp).semantics { contentDescription = previousDescription },
+            ) { Text("‹", style = MaterialTheme.typography.headlineMedium) }
+            TextButton(
+                onClick = onNext,
+                modifier = Modifier.size(52.dp).semantics { contentDescription = nextDescription },
+            ) { Text("›", style = MaterialTheme.typography.headlineMedium) }
         }
     }
 }
@@ -867,58 +1053,79 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
             scoreLabel,
         )
     }
+    val statusLabel = when {
+        mission.completed -> stringResource(R.string.mission_status_completed)
+        mission.locked && mission.trainingAvailable -> stringResource(R.string.mission_status_lesson_available)
+        mission.locked -> stringResource(R.string.mission_status_locked)
+        mission.trainingAvailable -> stringResource(R.string.mission_status_guided)
+        else -> stringResource(R.string.mission_status_ready)
+    }
     val foreground = when {
         mission.locked -> colors.muted.copy(alpha = .55f)
-        selected -> colors.night
         else -> colors.white
     }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 84.dp)
             .semantics {
                 role = Role.Button
                 contentDescription = description
+                this.selected = selected
             }
             .clickable(enabled = !mission.locked || mission.trainingAvailable, onClick = onClick),
-        color = if (selected) colors.green else Color.Transparent,
+        color = if (selected) colors.panelRaised else Color.Transparent,
         shape = RoundedCornerShape(12.dp),
+        border = if (selected) BorderStroke(1.dp, colors.green) else null,
     ) {
         Row(
-            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
                 Modifier
-                    .size(28.dp)
-                    .background(if (selected) colors.night.copy(alpha = .16f) else colors.panelRaised, CircleShape),
+                    .size(34.dp)
+                    .background(if (selected) colors.green else colors.panelRaised, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (mission.locked) "×" else stringResource(R.string.mission_number_short, mission.number),
+                    if (mission.locked && !mission.trainingAvailable) {
+                        stringResource(R.string.mission_locked_symbol)
+                    } else {
+                        stringResource(R.string.mission_number_short, mission.number)
+                    },
                     style = MaterialTheme.typography.labelMedium,
-                    color = foreground,
+                    color = if (selected) colors.night else foreground,
                 )
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        mission.campaignName.uppercase(),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                        maxLines = 1,
+                    )
+                    Text(
+                        statusLabel.uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = when {
+                            mission.locked && !mission.trainingAvailable -> colors.muted
+                            mission.completed -> colors.green
+                            else -> colors.amber
+                        },
+                        maxLines = 1,
+                    )
+                }
                 Text(mission.title, style = MaterialTheme.typography.titleMedium, color = foreground, maxLines = 1)
                 Text(
-                    mission.campaignName.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) colors.night.copy(alpha = .72f) else colors.cyan,
+                    stringResource(R.string.mission_focus_and_score, mission.subtitle, scoreLabel),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted,
                     maxLines = 1,
-                )
-                Text(
-                    mission.subtitle.uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) colors.night.copy(alpha = .7f) else colors.muted,
-                    maxLines = 1,
-                )
-                Text(
-                    scoreLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) colors.night.copy(alpha = .76f) else colors.greenDim,
-                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             if (!mission.locked || mission.completed) {
@@ -926,7 +1133,7 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
                     StarRating(
                         stars = stars,
                         compact = true,
-                        color = if (selected) colors.night else null,
+                        color = colors.amber,
                     )
                 }
             }
@@ -1004,11 +1211,23 @@ private fun MissionBriefing(
                     SectionLabel(stringResource(R.string.objectives))
                     Spacer(Modifier.height(6.dp))
                     mission.objectives.forEach { objective ->
-                        Text(
-                            stringResource(R.string.objective_item, objective),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.white,
-                        )
+                        Row(
+                            Modifier.padding(vertical = 3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            Box(
+                                Modifier
+                                    .padding(top = 6.dp)
+                                    .size(7.dp)
+                                    .background(colors.green, CircleShape),
+                            )
+                            Text(
+                                objective,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.white,
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(if (compact) 10.dp else 14.dp))
@@ -1041,32 +1260,39 @@ private fun MissionBriefing(
                     )
                 }
                 Spacer(Modifier.height(14.dp))
-                if (mission.sourceAttribution.isNotBlank()) {
-                    Text(
-                        mission.sourceAttribution,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.muted,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
-                onTraining?.let { launchTraining ->
-                    SecondaryActionButton(
+                if (onTraining != null) {
+                    PrimaryActionButton(
                         text = stringResource(R.string.practice_lesson),
-                        onClick = launchTraining,
+                        onClick = onTraining,
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(8.dp))
+                    SecondaryActionButton(
+                        text = stringResource(R.string.start_without_guidance),
+                        onClick = onStart,
+                        enabled = !mission.locked,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    if (mission.locked) {
+                        Text(
+                            stringResource(R.string.complete_previous_mission),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.amber,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    PrimaryActionButton(
+                        text = if (mission.isEndless) {
+                            stringResource(R.string.begin_endless_shift)
+                        } else {
+                            stringResource(R.string.start_briefing)
+                        },
+                        onClick = onStart,
+                        enabled = !mission.locked,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
-                PrimaryActionButton(
-                    text = if (mission.isEndless) {
-                        stringResource(R.string.begin_endless_shift)
-                    } else {
-                        stringResource(R.string.start_briefing)
-                    },
-                    onClick = onStart,
-                    enabled = !mission.locked,
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
             if (!compact) {
                 Spacer(Modifier.width(24.dp))
@@ -1174,6 +1400,7 @@ fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val compact = maxHeight < 430.dp
         val narrow = maxWidth < 700.dp
+        val showSavedPill = maxWidth >= 520.dp
         Column(
             Modifier
                 .fillMaxSize()
@@ -1183,8 +1410,20 @@ fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
                 eyebrow = stringResource(R.string.preferences),
                 title = stringResource(R.string.controller_settings),
                 onBack = { onAction(GameAction.Navigate(AppScreen.HOME)) },
-                trailing = { DataPill(stringResource(R.string.saved), stringResource(R.string.on_device)) },
+                trailing = if (showSavedPill) {
+                    { DataPill(stringResource(R.string.saved), stringResource(R.string.on_device)) }
+                } else {
+                    null
+                },
             )
+            if (!showSavedPill) {
+                Text(
+                    stringResource(R.string.settings_saved_automatically),
+                    modifier = Modifier.padding(top = 4.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.green,
+                )
+            }
             Spacer(Modifier.height(if (compact) 12.dp else 20.dp))
             if (narrow) {
                 LazyColumn(
@@ -1267,7 +1506,7 @@ private fun VolumeSetting(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(title.uppercase(), style = MaterialTheme.typography.labelLarge, color = colors.white)
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.muted, maxLines = 1)
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
             }
             TextButton(
                 onClick = onToggleMute,
@@ -1339,6 +1578,7 @@ private fun SettingToggle(title: String, subtitle: String, checked: Boolean, onT
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 72.dp)
             .clip(RoundedCornerShape(12.dp))
             .toggleable(
                 value = checked,
@@ -1351,7 +1591,7 @@ private fun SettingToggle(title: String, subtitle: String, checked: Boolean, onT
     ) {
         Column(Modifier.weight(1f)) {
             Text(title.uppercase(), style = MaterialTheme.typography.labelLarge, color = colors.white)
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.muted, maxLines = 2)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
         }
         Switch(
             checked = checked,
@@ -1450,6 +1690,26 @@ fun AboutScreen(onAction: (GameAction) -> Unit) {
 @Composable
 private fun AboutDetailsContent() {
     val colors = MaterialTheme.atcColors
+    GameUseNotice()
+    HorizontalDivider(color = colors.line)
+    AboutSection(
+        stringResource(R.string.guide_basics_title).uppercase(),
+        stringResource(R.string.guide_basics_body),
+        colors.green,
+    )
+    HorizontalDivider(color = colors.line)
+    AboutSection(
+        stringResource(R.string.guide_arrival_title).uppercase(),
+        stringResource(R.string.guide_arrival_body),
+        colors.cyan,
+    )
+    HorizontalDivider(color = colors.line)
+    AboutSection(
+        stringResource(R.string.guide_safety_title).uppercase(),
+        stringResource(R.string.guide_safety_body),
+        colors.amber,
+    )
+    HorizontalDivider(color = colors.line)
     AboutSection(
         stringResource(R.string.about_data_title).uppercase(),
         stringResource(R.string.about_data_body),

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -57,7 +59,7 @@ fun ScreenHeader(
     val colors = MaterialTheme.atcColors
     val backDescription = stringResource(R.string.cd_back)
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().heightIn(min = 56.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) {
@@ -91,9 +93,10 @@ fun ScreenHeader(
             )
             Text(
                 text = title,
+                modifier = Modifier.semantics { heading() },
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -129,7 +132,7 @@ fun PrimaryActionButton(
     val colors = MaterialTheme.atcColors
     Button(
         onClick = onClick,
-        modifier = modifier.height(50.dp),
+        modifier = modifier.heightIn(min = 52.dp),
         enabled = enabled,
         shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.buttonColors(
@@ -156,7 +159,7 @@ fun SecondaryActionButton(
     val colors = MaterialTheme.atcColors
     OutlinedButton(
         onClick = onClick,
-        modifier = modifier.height(46.dp),
+        modifier = modifier.heightIn(min = 50.dp),
         enabled = enabled,
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, colors.line),
@@ -176,7 +179,7 @@ fun DataPill(
     val colors = MaterialTheme.atcColors
     val resolvedAccent = accent ?: colors.green
     Surface(
-        modifier = modifier,
+        modifier = modifier.heightIn(min = 46.dp),
         shape = RoundedCornerShape(10.dp),
         color = colors.panelRaised.copy(alpha = .88f),
         border = BorderStroke(1.dp, colors.line),
@@ -185,7 +188,7 @@ fun DataPill(
             val stacked = maxWidth < 150.dp
             if (stacked) {
                 Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     Row(
@@ -214,7 +217,7 @@ fun DataPill(
                 }
             } else {
                 Row(
-                    Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                    Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {

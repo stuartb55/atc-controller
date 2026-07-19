@@ -82,7 +82,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -94,8 +93,8 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-private val AircraftLabelWidth = 104.dp
-private val AircraftLabelHeight = 48.dp
+private val AircraftLabelWidth = 114.dp
+private val AircraftLabelHeight = 50.dp
 private val FixLabelWidth = 96.dp
 private val FixLabelHeight = 18.dp
 private val RadarContentInset = 6.dp
@@ -104,7 +103,12 @@ private val RadarContentInset = 6.dp
 fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val compact = (maxWidth < 800.dp) || (maxHeight < 430.dp)
-        val stacked = (maxWidth < 600.dp) && (maxHeight >= 520.dp)
+        val stacked = (maxWidth < 680.dp) && (maxHeight >= 520.dp)
+        val commandDeckHeight = when {
+            maxHeight < 700.dp -> 272.dp
+            maxHeight < 850.dp -> 304.dp
+            else -> 336.dp
+        }
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().padding(if (compact) 8.dp else 12.dp)) {
                 GameStatusBar(state, compact, onAction)
@@ -112,6 +116,8 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     Spacer(Modifier.height(5.dp))
                     ReplayControls(replay, state, onAction)
                 }
+                Spacer(Modifier.height(if (compact) 6.dp else 8.dp))
+                MissionProgressRail(state)
                 Spacer(Modifier.height(if (compact) 7.dp else 10.dp))
                 if (stacked) {
                     RadarDisplay(
@@ -119,6 +125,10 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
                         onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
                         onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
+                        onSelectEvent = { sequence, aircraftId ->
+                            onAction(GameAction.SelectEvent(sequence, aircraftId))
+                        },
+                        onDismissTraining = { onAction(GameAction.DismissTutorial) },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
                     Spacer(Modifier.height(8.dp))
@@ -126,10 +136,9 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         state = state,
                         onAction = onAction,
                         compact = true,
-                        paged = true,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 220.dp, max = 300.dp),
+                            .height(commandDeckHeight),
                     )
                 } else {
                     Row(
@@ -141,15 +150,18 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                             onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
                             onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
                             onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
+                            onSelectEvent = { sequence, aircraftId ->
+                                onAction(GameAction.SelectEvent(sequence, aircraftId))
+                            },
+                            onDismissTraining = { onAction(GameAction.DismissTutorial) },
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         CommandPanel(
                             state = state,
                             onAction = onAction,
                             compact = compact,
-                            paged = false,
                             modifier = Modifier
-                                .width(if (compact) 228.dp else 290.dp)
+                                .width(if (compact) 300.dp else 348.dp)
                                 .fillMaxHeight(),
                         )
                     }
@@ -158,8 +170,6 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
 
             if (state.isPaused) {
                 PauseOverlay(state, onAction)
-            } else state.training?.let { training ->
-                TutorialOverlay(training, onAction, compact)
             }
             if (state.abandonConfirmationVisible) {
                 AbandonConfirmationDialog(onAction)
@@ -284,7 +294,7 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                         role = Role.Button
                         contentDescription = leaveDescription
                     }
-                    .clickable { onAction(GameAction.Navigate(AppScreen.HOME)) },
+                    .clickable { onAction(GameAction.RequestAbandonment) },
                 color = colors.panel,
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, colors.line),
@@ -392,6 +402,141 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
     }
 }
 
+/** Keeps the active objective and deadline visible while an aircraft command page is open. */
+@Composable
+private fun MissionProgressRail(state: GameUiState) {
+    val colors = MaterialTheme.atcColors
+    val objective = focusedObjective(state.objectiveProgress)
+    val objectiveLabel = objective?.let { stringResource(objectiveLabelResource(it.kind)) }
+    val timeLabel = when (state.missionClockState) {
+        MissionClockState.ACTIVE -> stringResource(
+            R.string.mission_time_remaining,
+            formatElapsed(state.missionTimeRemainingSeconds),
+        )
+        MissionClockState.OVERDUE -> stringResource(R.string.mission_time_overdue)
+        MissionClockState.FAILED -> stringResource(R.string.mission_time_failed)
+    }
+    val deadlineColor = when (state.missionClockState) {
+        MissionClockState.ACTIVE -> colors.cyan
+        MissionClockState.OVERDUE -> colors.amber
+        MissionClockState.FAILED -> colors.red
+    }
+    val borderColor = when {
+        state.missionClockState == MissionClockState.FAILED -> colors.red
+        state.missionClockState == MissionClockState.OVERDUE -> colors.amber
+        objective?.passed == true -> colors.greenDim
+        else -> colors.line
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics {
+                liveRegion = if (state.missionClockState == MissionClockState.FAILED) {
+                    LiveRegionMode.Assertive
+                } else {
+                    LiveRegionMode.Polite
+                }
+            },
+        color = colors.panelRaised.copy(alpha = .88f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, borderColor),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    stringResource(R.string.objectives).uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                )
+                if (objective != null && objectiveLabel != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (objective.passed) "✓" else "○",
+                            color = if (objective.passed) colors.green else colors.cyan,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            objectiveLabel,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colors.white,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "${objective.current}/${objective.target}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (objective.passed) colors.green else colors.cyan,
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = {
+                            if (objective.target <= 0) 1f else {
+                                (objective.current.toFloat() / objective.target).coerceIn(0f, 1f)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
+                        color = if (objective.passed) colors.green else colors.cyan,
+                        trackColor = colors.line,
+                    )
+                } else {
+                    Text(
+                        pluralStringResource(
+                            R.plurals.movements_remaining,
+                            state.movementsRemaining,
+                            state.movementsRemaining,
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.white,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier.widthIn(max = 132.dp),
+                horizontalAlignment = Alignment.End,
+            ) {
+                Text(
+                    timeLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = deadlineColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    pluralStringResource(
+                        R.plurals.movements_remaining,
+                        state.movementsRemaining,
+                        state.movementsRemaining,
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            StarRating(state.starForecast.securedStars, compact = true)
+        }
+    }
+}
+
+internal fun focusedObjective(
+    objectives: List<ObjectiveProgressUiModel>,
+): ObjectiveProgressUiModel? = objectives.firstOrNull { !it.passed } ?: objectives.lastOrNull()
+
+private fun objectiveLabelResource(kind: ObjectiveProgressKind): Int = when (kind) {
+    ObjectiveProgressKind.SAFE_MOVEMENTS -> R.string.objective_safe_movements
+    ObjectiveProgressKind.ARRIVALS -> R.string.objective_arrivals_landed
+    ObjectiveProgressKind.DEPARTURES -> R.string.objective_departures_exited
+    ObjectiveProgressKind.SCORE -> R.string.objective_score
+    ObjectiveProgressKind.STRIKES -> R.string.objective_separation_strikes
+}
+
 @Composable
 private fun StrikeIndicator(strikes: Int) {
     val colors = MaterialTheme.atcColors
@@ -429,12 +574,12 @@ private fun TimeControl(timeScale: Int, onAction: (GameAction) -> Unit) {
                     modifier = Modifier
                         .clip(RoundedCornerShape(7.dp))
                         .background(if (timeScale == value) colors.green else Color.Transparent)
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                         .semantics {
                             role = Role.Button
                             contentDescription = speedDescription
                         }
-                        .clickable { onAction(GameAction.SetTimeScale(value)) }
-                        .padding(horizontal = 9.dp, vertical = 6.dp),
+                        .clickable { onAction(GameAction.SetTimeScale(value)) },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -454,6 +599,8 @@ private fun RadarDisplay(
     onSelectAircraft: (String?) -> Unit,
     onDirectToFix: (String) -> Unit,
     onCycleConflict: (Int) -> Unit,
+    onSelectEvent: (Long, String?) -> Unit,
+    onDismissTraining: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
@@ -711,26 +858,37 @@ private fun RadarDisplay(
                 )
             }
 
-            Surface(
-                modifier = Modifier.align(Alignment.BottomStart).padding(9.dp),
-                color = colors.night.copy(alpha = .82f),
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, colors.line.copy(alpha = .7f)),
-            ) {
-                Row(Modifier.padding(horizontal = 9.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TinyPlane(Modifier.size(16.dp), colors.cyan)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (state.selectedAircraftId == null) {
-                            stringResource(R.string.radar_hint_select).uppercase()
-                        } else {
-                            stringResource(R.string.radar_hint_route).uppercase()
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.muted,
-                    )
-                }
+            state.training?.let { training ->
+                RadarTutorialCard(
+                    training = training,
+                    onDismiss = onDismissTraining,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(
+                            start = 9.dp,
+                            top = if (state.conflicts.isEmpty()) 9.dp else 68.dp,
+                            end = 9.dp,
+                        ),
+                )
             }
+
+            latestFeedbackEvent(state.eventFeed, state.elapsedSeconds)?.let { entry ->
+                val aircraftId = entry.aircraftIds.firstOrNull { aircraftId ->
+                    state.aircraft.any { it.id == aircraftId }
+                }
+                RadarEventFeedback(
+                    entry = entry,
+                    canSelectAircraft = aircraftId != null,
+                    onClick = { onSelectEvent(entry.sequence, aircraftId) },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 9.dp, vertical = 66.dp),
+                )
+            }
+            RadarContextPanel(
+                state = state,
+                modifier = Modifier.align(Alignment.BottomStart).padding(9.dp),
+            )
             RadarZoomControls(
                 viewport = viewport,
                 onZoom = { factor ->
@@ -745,6 +903,203 @@ private fun RadarDisplay(
                 onReset = { viewport = RadarViewport() },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(9.dp),
             )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadarContextPanel(state: GameUiState, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.atcColors
+    val selected = state.selectedAircraft
+    Surface(
+        modifier = modifier.widthIn(max = 190.dp),
+        color = colors.night.copy(alpha = .9f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, colors.line.copy(alpha = .82f)),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TinyPlane(
+                    Modifier.size(16.dp),
+                    if (selected == null) colors.green else colors.cyan,
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        selected?.callsign ?: stringResource(R.string.radar_hint_select),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected == null) colors.muted else colors.cyan,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    selected?.let { aircraft ->
+                        Text(
+                            stringResource(
+                                R.string.compact_aircraft_summary,
+                                aircraft.altitudeFeet / 100,
+                                aircraft.speedKnots,
+                                normalizedHeading(aircraft.headingDegrees),
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.white,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            state.visibleRunways.take(2).forEach { runway ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusDot(if (runway.isOccupied) colors.amber else colors.green)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        stringResource(
+                            if (runway.isOccupied) {
+                                R.string.runway_status_occupied
+                            } else {
+                                R.string.runway_status_clear
+                            },
+                            runway.id,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (runway.isOccupied) colors.amber else colors.greenDim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadarTutorialCard(
+    training: TrainingUiModel,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    val paneDescription = stringResource(
+        R.string.pane_tutorial_step,
+        training.stepIndex + 1,
+        training.stepCount,
+    )
+    Surface(
+        modifier = modifier
+            .fillMaxWidth(.9f)
+            .widthIn(max = 370.dp)
+            .semantics { paneTitle = paneDescription },
+        shape = RoundedCornerShape(14.dp),
+        color = colors.panel.copy(alpha = .96f),
+        border = BorderStroke(1.dp, if (training.rejectionMessage == null) colors.cyan else colors.amber),
+        shadowElevation = 10.dp,
+    ) {
+        Row(
+            Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    stringResource(
+                        R.string.training_step_kicker,
+                        training.stepIndex + 1,
+                    ).uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.cyan,
+                )
+                Text(
+                    training.prompt,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.white,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                training.rejectionMessage?.let { rejection ->
+                    Text(
+                        rejection,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.amber,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+            }
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+            ) {
+                Text(
+                    stringResource(if (training.isPractice) R.string.exit_lesson else R.string.skip),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                )
+            }
+        }
+    }
+}
+
+internal fun latestFeedbackEvent(
+    entries: List<EventFeedEntryUiModel>,
+    elapsedSeconds: Int,
+    maximumAgeSeconds: Int = 8,
+): EventFeedEntryUiModel? = entries.lastOrNull()?.takeIf { entry ->
+    elapsedSeconds - entry.elapsedSeconds in 0..maximumAgeSeconds
+}
+
+@Composable
+private fun RadarEventFeedback(
+    entry: EventFeedEntryUiModel,
+    canSelectAircraft: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    val accent = when (entry.severity) {
+        EventFeedSeverity.ROUTINE -> colors.cyan
+        EventFeedSeverity.SUCCESS -> colors.green
+        EventFeedSeverity.WARNING -> colors.amber
+        EventFeedSeverity.CRITICAL -> colors.red
+    }
+    Surface(
+        modifier = modifier
+            .fillMaxWidth(.86f)
+            .widthIn(max = 380.dp)
+            .semantics {
+                contentDescription = entry.caption
+                liveRegion = if (entry.severity == EventFeedSeverity.CRITICAL) {
+                    LiveRegionMode.Assertive
+                } else {
+                    LiveRegionMode.Polite
+                }
+                if (canSelectAircraft) role = Role.Button
+            }
+            .clickable(enabled = canSelectAircraft, onClick = onClick),
+        color = colors.night.copy(alpha = .94f),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, accent.copy(alpha = .82f)),
+        shadowElevation = 8.dp,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusDot(accent, pulse = entry.severity != EventFeedSeverity.ROUTINE)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                entry.caption,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = accent,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (canSelectAircraft) {
+                Spacer(Modifier.width(6.dp))
+                Text("›", color = accent, fontSize = 20.sp)
             }
         }
     }
@@ -1252,7 +1607,7 @@ private fun AircraftDataLabel(
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.white,
-                        fontSize = 8.sp,
+                        fontSize = 9.sp,
                         maxLines = 1,
                     )
                 } else {
@@ -1263,7 +1618,7 @@ private fun AircraftDataLabel(
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.white,
-                        fontSize = 8.sp,
+                        fontSize = 9.sp,
                         maxLines = 1,
                     )
                 }
@@ -1444,7 +1799,6 @@ private fun CommandPanel(
     state: GameUiState,
     onAction: (GameAction) -> Unit,
     compact: Boolean,
-    paged: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
@@ -1455,314 +1809,441 @@ private fun CommandPanel(
         border = BorderStroke(1.dp, colors.line),
     ) {
         val selected = state.selectedAircraft
-        var page by remember(selected?.id, paged) {
+        var page by remember(selected?.id) {
             mutableStateOf(
                 if (selected == null) CommandPanelPage.OVERVIEW else CommandPanelPage.CONTROL,
             )
         }
-        if (selected == null) {
-            Column(Modifier.fillMaxSize()) {
-                if (paged) {
-                    CommandPanelNavigation(page, aircraftSelected = false) { page = it }
-                }
-                key(page) {
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        if (!paged || page == CommandPanelPage.OVERVIEW) {
+        Column(Modifier.fillMaxSize()) {
+            CommandPanelNavigation(page, aircraftSelected = selected != null) { page = it }
+            key(page, selected?.id) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(if (compact) 10.dp else 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 9.dp else 12.dp),
+                ) {
+                    when (page) {
+                        CommandPanelPage.OVERVIEW -> {
                             OperationsOverview(state)
                             DynamicEventPanel(state, onAction)
                             FlightStripBoard(state, onAction)
+                            TextButton(
+                                onClick = { onAction(GameAction.RequestAbandonment) },
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                colors = ButtonDefaults.textButtonColors(contentColor = colors.muted),
+                            ) {
+                                Text(
+                                    stringResource(R.string.abandon_attempt).uppercase(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
                         }
-                        if (!paged || page == CommandPanelPage.EVENTS) {
+                        CommandPanelPage.CONTROL -> if (selected == null) {
+                            EmptySelection(state.aircraft.size)
+                        } else {
+                            AircraftControlPage(selected, state, onAction)
+                        }
+                        CommandPanelPage.ROUTE -> if (selected == null) {
+                            EmptySelection(state.aircraft.size)
+                        } else {
+                            AircraftRoutePage(selected, state, onAction)
+                        }
+                        CommandPanelPage.EVENTS -> {
+                            DynamicEventPanel(state, onAction)
                             EventFeed(state, onAction)
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AircraftControlPage(
+    aircraft: AircraftUiModel,
+    state: GameUiState,
+    onAction: (GameAction) -> Unit,
+) {
+    FlightStrip(
+        aircraft = aircraft,
+        onDeselect = { onAction(GameAction.SelectAircraft(null)) },
+    )
+    SectionLabel(stringResource(R.string.clearance))
+    PrimaryClearanceActions(aircraft, state, onAction)
+    SectionLabel(stringResource(R.string.vector_controls))
+    CompactVectorControls(aircraft, onAction)
+    RunwayAndProcedureControls(aircraft, state, onAction)
+    FuelStatus(aircraft.fuelPercent)
+}
+
+@Composable
+private fun PrimaryClearanceActions(
+    aircraft: AircraftUiModel,
+    state: GameUiState,
+    onAction: (GameAction) -> Unit,
+) {
+    val colors = MaterialTheme.atcColors
+    val runway = aircraft.assignedRunway
+        ?: state.visibleRunways.firstOrNull()?.id
+        ?: stringResource(R.string.not_available_short)
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (aircraft.phase == FlightPhase.DEPARTURE) {
+            if (state.runwayProceduresEnabled) {
+                QuickCommandButton(
+                    label = stringResource(R.string.line_up_wait),
+                    caption = runway,
+                    accent = colors.cyan,
+                    onClick = { onAction(GameAction.LineUpAndWait) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            QuickCommandButton(
+                label = stringResource(R.string.clear_takeoff),
+                caption = runway,
+                accent = colors.green,
+                onClick = { onAction(GameAction.IssueClearance(ClearanceType.TAKE_OFF)) },
+                modifier = Modifier.weight(1f),
+            )
         } else {
-            val routeFixes = state.fixes.filter { it.kind != FixKind.APPROACH }
-            Column(Modifier.fillMaxSize()) {
-                if (paged) {
-                    CommandPanelNavigation(page, aircraftSelected = true) { page = it }
-                }
-                key(page) {
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState())
-                            .padding(if (compact) 12.dp else 16.dp),
-                    ) {
-                    if (!paged || page == CommandPanelPage.OVERVIEW) {
-                        OperationsOverview(state)
-                        DynamicEventPanel(state, onAction)
-                        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                        FlightStripBoard(state, onAction)
-                    }
-                    if (!paged || page in setOf(CommandPanelPage.CONTROL, CommandPanelPage.ROUTE)) {
-                        FlightStrip(
-                            aircraft = selected,
-                            compact = paged,
-                            onDeselect = { onAction(GameAction.SelectAircraft(null)) },
-                        )
-                        Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                    }
-                    if (!paged || page == CommandPanelPage.ROUTE) {
-                if (routeFixes.isNotEmpty()) {
-                    SectionLabel(stringResource(R.string.route_shortcut))
-                    Spacer(Modifier.height(7.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        SecondaryActionButton(
-                            text = stringResource(R.string.undo_waypoint),
-                            onClick = { onAction(GameAction.UndoWaypoint) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        SecondaryActionButton(
-                            text = stringResource(R.string.clear_route),
-                            onClick = { onAction(GameAction.ClearRoute) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                    Spacer(Modifier.height(7.dp))
-                    routeFixes.forEach { fix ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                            SecondaryActionButton(
-                                text = stringResource(R.string.direct_to, fix.name),
-                                onClick = { onAction(GameAction.DirectToFix(fix.name)) },
-                                modifier = Modifier.weight(1f),
-                            )
-                            SecondaryActionButton(
-                                text = stringResource(R.string.append_fix, fix.name),
-                                onClick = { onAction(GameAction.AppendFix(fix.name)) },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        Spacer(Modifier.height(5.dp))
-                    }
-                    Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                }
-                    }
-                    if (!paged || page == CommandPanelPage.CONTROL) {
-                SectionLabel(stringResource(R.string.vector_controls))
-                Spacer(Modifier.height(7.dp))
-                StepControl(
-                    label = stringResource(R.string.target_heading),
-                    value = stringResource(R.string.heading_value, selected.targetHeadingDegrees),
-                    detail = stringResource(R.string.heading_step),
-                    onDecrease = {
-                        onAction(GameAction.SetTargetHeading(selected.targetHeadingDegrees - 5))
-                    },
-                ) { onAction(GameAction.SetTargetHeading(selected.targetHeadingDegrees + 5)) }
-                Spacer(Modifier.height(7.dp))
-                StepControl(
-                    label = stringResource(R.string.target_altitude),
-                    value = stringResource(R.string.flight_level_value, selected.targetAltitudeFeet / 100),
-                    detail = stringResource(R.string.feet_value, localizedInteger(selected.targetAltitudeFeet)),
-                    onDecrease = { onAction(GameAction.SetTargetAltitude(selected.targetAltitudeFeet - 500)) },
-                ) { onAction(GameAction.SetTargetAltitude(selected.targetAltitudeFeet + 500)) }
-                Spacer(Modifier.height(7.dp))
-                StepControl(
-                    label = stringResource(R.string.target_speed),
-                    value = stringResource(R.string.knots_value, selected.targetSpeedKnots),
-                    detail = stringResource(R.string.indicated_airspeed_short),
-                    onDecrease = { onAction(GameAction.SetTargetSpeed(selected.targetSpeedKnots - 10)) },
-                ) { onAction(GameAction.SetTargetSpeed(selected.targetSpeedKnots + 10)) }
-                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                SectionLabel(stringResource(R.string.clearance))
-                Spacer(Modifier.height(7.dp))
-                if (state.runwayProceduresEnabled) {
-                    state.visibleRunways.forEach { runway ->
-                        SecondaryActionButton(
-                            text = stringResource(R.string.assign_runway, runway.id),
-                            onClick = { onAction(GameAction.AssignRunway(runway.id)) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(5.dp))
-                    }
-                }
-                if (selected.phase == FlightPhase.DEPARTURE) {
-                    if (state.runwayProceduresEnabled) {
-                        state.visibleRunways
-                            .filter { it.id != selected.assignedRunway }
-                            .forEach { runway ->
-                                SecondaryActionButton(
-                                    text = stringResource(R.string.cross_runway, runway.id),
-                                    onClick = { onAction(GameAction.CrossRunway(runway.id)) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                                Spacer(Modifier.height(5.dp))
-                            }
-                        ClearanceButton(
-                            label = stringResource(R.string.line_up_wait),
-                            caption = selected.assignedRunway
-                                ?: state.visibleRunways.firstOrNull()?.id
-                                ?: stringResource(R.string.not_available_short),
-                            accent = colors.cyan,
-                        ) { onAction(GameAction.LineUpAndWait) }
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    ClearanceButton(
-                        label = stringResource(R.string.clear_takeoff),
-                        caption = selected.assignedRunway
-                            ?: state.visibleRunways.firstOrNull()?.id
-                            ?: stringResource(R.string.not_available_short),
-                        accent = colors.green,
-                    ) { onAction(GameAction.IssueClearance(ClearanceType.TAKE_OFF)) }
-                    if (state.runwayProceduresEnabled) {
-                        Spacer(Modifier.height(6.dp))
-                        SecondaryActionButton(
-                            text = stringResource(R.string.cancel_takeoff_clearance),
-                            onClick = { onAction(GameAction.CancelTakeoffClearance) },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
+            if (state.approachSetupAssistEnabled) {
+                QuickCommandButton(
+                    label = stringResource(R.string.prepare_approach),
+                    caption = runway,
+                    accent = colors.cyan,
+                    onClick = { onAction(GameAction.PrepareApproach) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            QuickCommandButton(
+                label = stringResource(R.string.clear_land),
+                caption = runway,
+                accent = colors.green,
+                onClick = { onAction(GameAction.IssueClearance(ClearanceType.LAND)) },
+                modifier = Modifier.weight(1f),
+            )
+            QuickCommandButton(
+                label = stringResource(R.string.go_around),
+                caption = stringResource(R.string.climb_feet, localizedInteger(3_000)),
+                accent = colors.amber,
+                onClick = { onAction(GameAction.IssueClearance(ClearanceType.GO_AROUND)) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickCommandButton(
+    label: String,
+    caption: String,
+    accent: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    val description = stringResource(R.string.cd_clearance_action, label, caption)
+    Surface(
+        modifier = modifier
+            .heightIn(min = 76.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .clickable(onClick = onClick),
+        color = accent.copy(alpha = .12f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, accent.copy(alpha = .78f)),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            StatusDot(accent)
+            Text(
+                label.uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                color = accent,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                caption,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactVectorControls(
+    aircraft: AircraftUiModel,
+    onAction: (GameAction) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        CompactAssignmentControl(
+            label = stringResource(R.string.heading_short),
+            fullLabel = stringResource(R.string.target_heading),
+            value = stringResource(R.string.heading_value, aircraft.targetHeadingDegrees),
+            onDecrease = { onAction(GameAction.SetTargetHeading(aircraft.targetHeadingDegrees - 5)) },
+            onIncrease = { onAction(GameAction.SetTargetHeading(aircraft.targetHeadingDegrees + 5)) },
+            modifier = Modifier.weight(1f),
+        )
+        CompactAssignmentControl(
+            label = stringResource(R.string.altitude_short),
+            fullLabel = stringResource(R.string.target_altitude),
+            value = stringResource(R.string.flight_level_code, aircraft.targetAltitudeFeet / 100),
+            onDecrease = { onAction(GameAction.SetTargetAltitude(aircraft.targetAltitudeFeet - 500)) },
+            onIncrease = { onAction(GameAction.SetTargetAltitude(aircraft.targetAltitudeFeet + 500)) },
+            modifier = Modifier.weight(1f),
+        )
+        CompactAssignmentControl(
+            label = stringResource(R.string.speed_short),
+            fullLabel = stringResource(R.string.target_speed),
+            value = stringResource(R.string.knots_value, aircraft.targetSpeedKnots),
+            onDecrease = { onAction(GameAction.SetTargetSpeed(aircraft.targetSpeedKnots - 10)) },
+            onIncrease = { onAction(GameAction.SetTargetSpeed(aircraft.targetSpeedKnots + 10)) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun CompactAssignmentControl(
+    label: String,
+    fullLabel: String,
+    value: String,
+    onDecrease: () -> Unit,
+    onIncrease: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    Surface(
+        modifier = modifier,
+        color = colors.night.copy(alpha = .7f),
+        shape = RoundedCornerShape(11.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                label.uppercase(),
+                modifier = Modifier.padding(top = 7.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.titleMedium,
+                color = colors.white,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+            )
+            Row(Modifier.fillMaxWidth()) {
+                CompactAssignmentButton(
+                    symbol = "−",
+                    description = stringResource(R.string.decrease_value, fullLabel),
+                    onClick = onDecrease,
+                    modifier = Modifier.weight(1f),
+                )
+                CompactAssignmentButton(
+                    symbol = "+",
+                    description = stringResource(R.string.increase_value, fullLabel),
+                    onClick = onIncrease,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactAssignmentButton(
+    symbol: String,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.atcColors
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(symbol, fontSize = 22.sp, color = colors.green, fontWeight = FontWeight.Light)
+    }
+}
+
+@Composable
+private fun RunwayAndProcedureControls(
+    aircraft: AircraftUiModel,
+    state: GameUiState,
+    onAction: (GameAction) -> Unit,
+) {
+    val colors = MaterialTheme.atcColors
+    if (state.runwayProceduresEnabled || state.proceduralControlEnabled) {
+        SectionLabel(stringResource(R.string.procedural_control))
+    }
+    if (state.runwayProceduresEnabled) {
+        state.visibleRunways.forEach { runway ->
+            SecondaryActionButton(
+                text = if (aircraft.phase == FlightPhase.DEPARTURE) {
+                    stringResource(R.string.assign_runway, runway.id)
                 } else {
-                    if (state.runwayProceduresEnabled) {
-                        state.visibleRunways.forEach { runway ->
-                            SecondaryActionButton(
-                                text = stringResource(R.string.assign_approach, runway.id),
-                                onClick = { onAction(GameAction.AssignApproach(runway.id)) },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Spacer(Modifier.height(5.dp))
-                        }
-                    }
-                    if (state.approachSetupAssistEnabled) {
-                        ClearanceButton(
-                            label = stringResource(R.string.prepare_approach),
-                            caption = stringResource(
-                                R.string.prepare_approach_caption,
-                                selected.assignedRunway
-                                    ?: state.visibleRunways.firstOrNull()?.id
-                                    ?: stringResource(R.string.not_available_short),
-                            ),
-                            accent = colors.cyan,
-                        ) { onAction(GameAction.PrepareApproach) }
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    ClearanceButton(
-                        label = stringResource(R.string.clear_land),
-                        caption = selected.assignedRunway
-                            ?: state.visibleRunways.firstOrNull()?.id
-                            ?: stringResource(R.string.not_available_short),
-                        accent = colors.green,
-                    ) { onAction(GameAction.IssueClearance(ClearanceType.LAND)) }
-                    Spacer(Modifier.height(6.dp))
-                    ClearanceButton(
-                        label = stringResource(R.string.go_around),
-                        caption = stringResource(R.string.climb_feet, localizedInteger(3_000)),
-                        accent = colors.amber,
-                    ) { onAction(GameAction.IssueClearance(ClearanceType.GO_AROUND)) }
-                    Spacer(Modifier.height(6.dp))
-                    if (state.runwayProceduresEnabled) Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        SecondaryActionButton(
-                            text = stringResource(R.string.cancel_approach),
-                            onClick = { onAction(GameAction.CancelApproach) },
-                            modifier = Modifier.weight(1f),
-                        )
-                        SecondaryActionButton(
-                            text = stringResource(R.string.cancel_landing_clearance),
-                            onClick = { onAction(GameAction.CancelLandingClearance) },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                if (state.proceduralControlEnabled) {
-                    SectionLabel(stringResource(R.string.procedural_control))
-                    Spacer(Modifier.height(7.dp))
-                    if (selected.phase == FlightPhase.ARRIVAL || selected.phase == FlightPhase.APPROACH) {
-                        if (selected.handoffStatus == "OFFERED") {
-                            PrimaryActionButton(
-                                text = stringResource(R.string.accept_inbound_handoff),
-                                onClick = { onAction(GameAction.AcknowledgeInboundHandoff) },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Spacer(Modifier.height(6.dp))
-                        }
-                        if (selected.holdFixName != null) {
-                            Text(
-                                stringResource(
-                                    R.string.hold_active_status,
-                                    selected.holdFixName,
-                                    selected.holdSeconds,
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colors.amber,
-                            )
-                            Spacer(Modifier.height(5.dp))
-                            SecondaryActionButton(
-                                text = stringResource(R.string.cancel_hold),
-                                onClick = { onAction(GameAction.CancelHold) },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
+                    stringResource(R.string.assign_approach, runway.id)
+                },
+                onClick = {
+                    onAction(
+                        if (aircraft.phase == FlightPhase.DEPARTURE) {
+                            GameAction.AssignRunway(runway.id)
                         } else {
-                            state.fixes.take(4).chunked(2).forEach { fixes ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                    fixes.forEach { fix ->
-                                        SecondaryActionButton(
-                                            text = stringResource(R.string.hold_at_fix, fix.name),
-                                            onClick = { onAction(GameAction.AssignHold(fix.name)) },
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                    }
-                                    if (fixes.size == 1) Spacer(Modifier.weight(1f))
-                                }
-                                Spacer(Modifier.height(5.dp))
-                            }
-                        }
-                    } else if (selected.phase == FlightPhase.DEPARTURE) {
+                            GameAction.AssignApproach(runway.id)
+                        },
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (aircraft.phase == FlightPhase.DEPARTURE) {
+            state.visibleRunways
+                .filter { it.id != aircraft.assignedRunway }
+                .forEach { runway ->
+                    SecondaryActionButton(
+                        text = stringResource(R.string.cross_runway, runway.id),
+                        onClick = { onAction(GameAction.CrossRunway(runway.id)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            SecondaryActionButton(
+                text = stringResource(R.string.cancel_takeoff_clearance),
+                onClick = { onAction(GameAction.CancelTakeoffClearance) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SecondaryActionButton(
+                    text = stringResource(R.string.cancel_approach),
+                    onClick = { onAction(GameAction.CancelApproach) },
+                    modifier = Modifier.weight(1f),
+                )
+                SecondaryActionButton(
+                    text = stringResource(R.string.cancel_landing_clearance),
+                    onClick = { onAction(GameAction.CancelLandingClearance) },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+
+    if (!state.proceduralControlEnabled) return
+    if (aircraft.phase == FlightPhase.ARRIVAL || aircraft.phase == FlightPhase.APPROACH) {
+        if (aircraft.handoffStatus == "OFFERED") {
+            PrimaryActionButton(
+                text = stringResource(R.string.accept_inbound_handoff),
+                onClick = { onAction(GameAction.AcknowledgeInboundHandoff) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (aircraft.holdFixName != null) {
+            Text(
+                stringResource(R.string.hold_active_status, aircraft.holdFixName, aircraft.holdSeconds),
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.amber,
+            )
+            SecondaryActionButton(
+                text = stringResource(R.string.cancel_hold),
+                onClick = { onAction(GameAction.CancelHold) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            state.fixes.take(4).chunked(2).forEach { fixes ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    fixes.forEach { fix ->
                         SecondaryActionButton(
-                            text = stringResource(R.string.issue_exit_clearance),
-                            onClick = { onAction(GameAction.IssueExitClearance) },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = !selected.exitClearanceGranted,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        PrimaryActionButton(
-                            text = stringResource(R.string.initiate_handoff),
-                            onClick = { onAction(GameAction.InitiateOutboundHandoff) },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = selected.exitClearanceGranted &&
-                                selected.handoffStatus !in setOf("REQUESTED", "ACKNOWLEDGED", "COMPLETED"),
+                            text = stringResource(R.string.hold_at_fix, fix.name),
+                            onClick = { onAction(GameAction.AssignHold(fix.name)) },
+                            modifier = Modifier.weight(1f),
                         )
                     }
-                    selected.handoffStatus?.let { status ->
-                        Spacer(Modifier.height(5.dp))
-                        Text(
-                            stringResource(
-                                R.string.handoff_status,
-                                status.lowercase().replace('_', ' '),
-                            ),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (status == "TIMED_OUT") colors.red else colors.cyan,
-                        )
-                    }
-                    Spacer(Modifier.height(if (compact) 8.dp else 12.dp))
-                }
-                FuelStatus(selected.fuelPercent)
-                        Spacer(Modifier.height(10.dp))
-                    }
-                    if (!paged || page == CommandPanelPage.EVENTS) {
-                        EventFeed(state, onAction)
-                        Spacer(Modifier.height(9.dp))
-                    }
-                    if (!paged || page == CommandPanelPage.CONTROL) {
-                TextButton(
-                    onClick = { onAction(GameAction.RequestAbandonment) },
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp),
-                    colors = ButtonDefaults.textButtonColors(contentColor = colors.muted),
-                ) {
-                    Text(stringResource(R.string.abandon_attempt).uppercase(), style = MaterialTheme.typography.labelSmall)
-                }
-                    }
-                    }
+                    if (fixes.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
+        }
+    } else if (aircraft.phase == FlightPhase.DEPARTURE) {
+        SecondaryActionButton(
+            text = stringResource(R.string.issue_exit_clearance),
+            onClick = { onAction(GameAction.IssueExitClearance) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !aircraft.exitClearanceGranted,
+        )
+        PrimaryActionButton(
+            text = stringResource(R.string.initiate_handoff),
+            onClick = { onAction(GameAction.InitiateOutboundHandoff) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = aircraft.exitClearanceGranted &&
+                aircraft.handoffStatus !in setOf("REQUESTED", "ACKNOWLEDGED", "COMPLETED"),
+        )
+    }
+    aircraft.handoffStatus?.let { status ->
+        Text(
+            stringResource(R.string.handoff_status, status.lowercase().replace('_', ' ')),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (status == "TIMED_OUT") colors.red else colors.cyan,
+        )
+    }
+}
+
+@Composable
+private fun AircraftRoutePage(
+    aircraft: AircraftUiModel,
+    state: GameUiState,
+    onAction: (GameAction) -> Unit,
+) {
+    val routeFixes = state.fixes.filter { it.kind != FixKind.APPROACH }
+    FlightStrip(
+        aircraft = aircraft,
+        onDeselect = { onAction(GameAction.SelectAircraft(null)) },
+    )
+    SectionLabel(stringResource(R.string.route_shortcut))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        SecondaryActionButton(
+            text = stringResource(R.string.undo_waypoint),
+            onClick = { onAction(GameAction.UndoWaypoint) },
+            modifier = Modifier.weight(1f),
+        )
+        SecondaryActionButton(
+            text = stringResource(R.string.clear_route),
+            onClick = { onAction(GameAction.ClearRoute) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+    routeFixes.forEach { fix ->
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SecondaryActionButton(
+                text = stringResource(R.string.direct_to, fix.name),
+                onClick = { onAction(GameAction.DirectToFix(fix.name)) },
+                modifier = Modifier.weight(1f),
+            )
+            SecondaryActionButton(
+                text = stringResource(R.string.append_fix, fix.name),
+                onClick = { onAction(GameAction.AppendFix(fix.name)) },
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -1795,7 +2276,7 @@ private fun CommandPanelNavigation(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .heightIn(min = 44.dp)
+                    .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (selected) colors.green.copy(alpha = .16f) else Color.Transparent)
                     .selectable(
@@ -1868,34 +2349,6 @@ private fun OperationsOverview(state: GameUiState) {
     ) {
         Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             SectionLabel(stringResource(R.string.live_operations))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    pluralStringResource(
-                        R.plurals.movements_remaining,
-                        state.movementsRemaining,
-                        state.movementsRemaining,
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.white,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    when (state.missionClockState) {
-                        MissionClockState.ACTIVE -> stringResource(
-                            R.string.mission_time_remaining,
-                            formatElapsed(state.missionTimeRemainingSeconds),
-                        )
-                        MissionClockState.OVERDUE -> stringResource(R.string.mission_time_overdue)
-                        MissionClockState.FAILED -> stringResource(R.string.mission_time_failed)
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = when (state.missionClockState) {
-                        MissionClockState.ACTIVE -> colors.white
-                        MissionClockState.OVERDUE -> colors.amber
-                        MissionClockState.FAILED -> colors.red
-                    },
-                )
-            }
             Text(
                 pluralStringResource(
                     R.plurals.secured_stars,
@@ -2241,7 +2694,6 @@ private fun EmptySelection(aircraftCount: Int) {
 @Composable
 private fun FlightStrip(
     aircraft: AircraftUiModel,
-    compact: Boolean = false,
     onDeselect: () -> Unit,
 ) {
     val colors = MaterialTheme.atcColors
@@ -2251,163 +2703,45 @@ private fun FlightStrip(
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, colors.greenDim),
     ) {
-        if (compact) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TinyPlane(
-                    color = if (aircraft.phase == FlightPhase.DEPARTURE) colors.cyan else colors.green,
-                )
-                Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        aircraft.callsign,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = colors.white,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                    Text(
-                        stringResource(
-                            R.string.compact_aircraft_summary,
-                            aircraft.altitudeFeet / 100,
-                            aircraft.speedKnots,
-                            normalizedHeading(aircraft.headingDegrees),
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = colors.muted,
-                    )
-                }
-                Surface(
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .size(48.dp)
-                        .clickable(onClick = onDeselect)
-                        .semantics { contentDescription = closeDescription },
-                    shape = CircleShape,
-                    color = colors.panel,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("×", color = colors.muted, fontSize = 16.sp)
-                    }
-                }
-            }
-            return@Surface
-        }
-        Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TinyPlane(color = if (aircraft.phase == FlightPhase.DEPARTURE) colors.cyan else colors.green)
-                Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(aircraft.callsign, style = MaterialTheme.typography.titleLarge, color = colors.white, fontFamily = FontFamily.Monospace)
-                    Text(stringResource(R.string.aircraft_type_phase, aircraft.type, phaseLabel(aircraft.phase).uppercase()), style = MaterialTheme.typography.labelSmall, color = colors.muted)
-                }
-                Surface(
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .size(48.dp)
-                        .clickable(onClick = onDeselect)
-                        .semantics { contentDescription = closeDescription },
-                    shape = CircleShape,
-                    color = colors.panel,
-                ) {
-                    Box(contentAlignment = Alignment.Center) { Text("×", color = colors.muted, fontSize = 16.sp) }
-                }
-            }
-            Spacer(Modifier.height(9.dp))
-            HorizontalDivider(color = colors.line)
-            Spacer(Modifier.height(8.dp))
-            Row {
-                StripDatum(stringResource(R.string.altitude_short), stringResource(R.string.flight_level_short, aircraft.altitudeFeet / 100), Modifier.weight(1f))
-                StripDatum(stringResource(R.string.speed_short), stringResource(R.string.knots_value, aircraft.speedKnots), Modifier.weight(1f))
-                StripDatum(stringResource(R.string.heading_short), stringResource(R.string.heading_value, aircraft.headingDegrees.toInt()), Modifier.weight(1f))
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(aircraft.clearance, style = MaterialTheme.typography.labelSmall, color = colors.green)
-        }
-    }
-}
-
-@Composable
-private fun StripDatum(label: String, value: String, modifier: Modifier = Modifier) {
-    val colors = MaterialTheme.atcColors
-    Column(modifier) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = colors.muted)
-        Text(value, style = MaterialTheme.typography.labelMedium, color = colors.white)
-    }
-}
-
-@Composable
-private fun StepControl(
-    label: String,
-    value: String,
-    detail: String,
-    onDecrease: () -> Unit,
-    onIncrease: () -> Unit,
-) {
-    val colors = MaterialTheme.atcColors
-    Surface(
-        color = colors.night.copy(alpha = .62f),
-        shape = RoundedCornerShape(11.dp),
-        border = BorderStroke(1.dp, colors.line),
-    ) {
-        Row(Modifier.fillMaxWidth().height(54.dp), verticalAlignment = Alignment.CenterVertically) {
-            StepButton("−", stringResource(R.string.decrease_value, label), onDecrease)
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(label.uppercase(), style = MaterialTheme.typography.labelSmall, color = colors.muted, maxLines = 1)
-                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(value, style = MaterialTheme.typography.titleMedium, color = colors.white, fontFamily = FontFamily.Monospace)
-                    Text(detail, style = MaterialTheme.typography.labelSmall, color = colors.greenDim, maxLines = 1)
-                }
-            }
-            StepButton("+", stringResource(R.string.increase_value, label), onIncrease)
-        }
-    }
-}
-
-@Composable
-private fun StepButton(label: String, description: String, onClick: () -> Unit) {
-    val colors = MaterialTheme.atcColors
-    Box(
-        Modifier
-            .fillMaxHeight()
-            .width(48.dp)
-            .semantics {
-                role = Role.Button
-                contentDescription = description
-            }
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, fontSize = 22.sp, color = colors.green, fontWeight = FontWeight.Light)
-    }
-}
-
-@Composable
-private fun ClearanceButton(label: String, caption: String, accent: Color, onClick: () -> Unit) {
-    val colors = MaterialTheme.atcColors
-    val description = stringResource(R.string.cd_clearance_action, label, caption)
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .semantics {
-                role = Role.Button
-                contentDescription = description
-            }
-            .clickable(onClick = onClick),
-        color = accent.copy(alpha = .11f),
-        shape = RoundedCornerShape(11.dp),
-        border = BorderStroke(1.dp, accent.copy(alpha = .72f)),
-    ) {
-        Row(Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(accent)
-            Spacer(Modifier.width(9.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TinyPlane(
+                color = if (aircraft.phase == FlightPhase.DEPARTURE) colors.cyan else colors.green,
+            )
+            Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(label.uppercase(), style = MaterialTheme.typography.labelLarge, color = accent)
-                Text(caption, style = MaterialTheme.typography.labelSmall, color = colors.muted)
+                Text(
+                    aircraft.callsign,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colors.white,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Text(
+                    stringResource(
+                        R.string.compact_aircraft_summary,
+                        aircraft.altitudeFeet / 100,
+                        aircraft.speedKnots,
+                        normalizedHeading(aircraft.headingDegrees),
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                )
             }
-            Text("›", fontSize = 21.sp, color = accent)
+            Surface(
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .size(48.dp)
+                    .clickable(onClick = onDeselect)
+                    .semantics { contentDescription = closeDescription },
+                shape = CircleShape,
+                color = colors.panel,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("×", color = colors.muted, fontSize = 16.sp)
+                }
+            }
         }
     }
 }
@@ -2478,103 +2812,6 @@ private fun PauseOverlay(state: GameUiState, onAction: (GameAction) -> Unit) {
     }
 }
 
-@Composable
-private fun TutorialOverlay(
-    training: TrainingUiModel,
-    onAction: (GameAction) -> Unit,
-    compact: Boolean,
-) {
-    val colors = MaterialTheme.atcColors
-    val paneDescription = stringResource(
-        R.string.pane_tutorial_step,
-        training.stepIndex + 1,
-        training.stepCount,
-    )
-    Box(Modifier.fillMaxSize()) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .semantics { paneTitle = paneDescription },
-        ) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = if (compact) 18.dp else 28.dp, bottom = if (compact) 18.dp else 28.dp)
-                    .widthIn(min = 280.dp, max = if (compact) 370.dp else 440.dp),
-                shape = RoundedCornerShape(19.dp),
-                color = colors.panel,
-                border = BorderStroke(1.dp, colors.cyan),
-                shadowElevation = 16.dp,
-            ) {
-                Column(Modifier.padding(if (compact) 16.dp else 20.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            stringResource(
-                                R.string.training_step_kicker,
-                                training.stepIndex + 1,
-                            ).uppercase(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.cyan,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            stringResource(
-                                R.string.tutorial_progress,
-                                training.stepIndex + 1,
-                                training.stepCount,
-                            ),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = colors.muted,
-                        )
-                    }
-                    Spacer(Modifier.height(5.dp))
-                    Text(training.title, style = MaterialTheme.typography.titleLarge, color = colors.white)
-                    Text(
-                        training.prompt,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.muted,
-                        maxLines = if (compact) 3 else 4,
-                    )
-                    Text(training.actionGate, style = MaterialTheme.typography.labelSmall, color = colors.cyan)
-                    training.rejectionMessage?.let { rejection ->
-                        Text(
-                            rejection,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.amber,
-                        )
-                    }
-                    Spacer(Modifier.height(13.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                            repeat(training.stepCount) { index ->
-                                Box(
-                                    Modifier
-                                        .width(if (index == training.stepIndex) 20.dp else 6.dp)
-                                        .height(5.dp)
-                                        .background(
-                                            if (index == training.stepIndex) colors.cyan else colors.line,
-                                            CircleShape,
-                                        ),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { onAction(GameAction.DismissTutorial) }) {
-                            Text(
-                                stringResource(
-                                    if (training.isPractice) R.string.exit_lesson else R.string.skip,
-                                ).uppercase(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = colors.muted,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 private fun NormalizedPoint.toOffset(size: Size) = Offset(x * size.width, y * size.height)
 
 private fun formatElapsed(seconds: Int): String = String.format(
@@ -2588,14 +2825,3 @@ private fun altitudeTrend(aircraft: AircraftUiModel): String = when {
     aircraft.targetAltitudeFeet < aircraft.altitudeFeet -> "↓"
     else -> "•"
 }
-
-@Composable
-private fun phaseLabel(phase: FlightPhase): String = stringResource(
-    when (phase) {
-        FlightPhase.ARRIVAL -> R.string.phase_arrival
-        FlightPhase.DEPARTURE -> R.string.phase_departure
-        FlightPhase.APPROACH -> R.string.phase_approach
-        FlightPhase.LANDED -> R.string.phase_landed
-        FlightPhase.EXITED -> R.string.phase_exited
-    },
-)
