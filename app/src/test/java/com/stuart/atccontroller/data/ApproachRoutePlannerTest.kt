@@ -28,6 +28,10 @@ class ApproachRoutePlannerTest {
 
         assertEquals("GAME_NORTHEAST", plan.viaFixId)
         assertTrue(plan.route.waypoints.contains(Vec2(pol.x, pol.y)))
+        assertTrue(
+            "Expected controller-sized legs, got ${plan.route.waypoints.size}",
+            plan.route.waypoints.size <= 10,
+        )
     }
 
     @Test
@@ -57,16 +61,37 @@ class ApproachRoutePlannerTest {
     @Test
     fun `all content-pack entry and runway combinations produce bounded valid routes`() {
         listOf(ManchesterContent.airport, CoastalContent.airport).forEach { airport ->
-            airport.fixes.forEach { entry ->
+            airport.fixes.filter { it.use != FixUse.WAYPOINT }.forEach { entry ->
                 airport.runwayEnds.forEach { runway ->
                     val aircraft = inboundAtFix(airport, entry.id, runway.id)
                     val route = ApproachRoutePlanner.plan(aircraft, airport, runway.id).route
 
                     assertTrue("${airport.id}/${entry.id}/${runway.id}", route.waypoints.isNotEmpty())
-                    assertTrue(route.waypoints.size <= 64)
+                    assertTrue(
+                        "${airport.id}/${entry.id}/${runway.id} has ${route.waypoints.size} legs",
+                        route.waypoints.size <= 14,
+                    )
                     assertEquals(
                         Vec2(runway.threshold.x, runway.threshold.y),
                         route.waypoints.last(),
+                    )
+                    val legDistances = buildList {
+                        var previous = aircraft.position
+                        route.waypoints.forEach { point ->
+                            add(
+                                Navigation.distanceNm(
+                                    previous,
+                                    point,
+                                    airport.mapWidthNm,
+                                    airport.mapHeightNm,
+                                ),
+                            )
+                            previous = point
+                        }
+                    }
+                    assertTrue(
+                        "${airport.id}/${entry.id}/${runway.id} has tiny legs: $legDistances",
+                        legDistances.all { it >= 0.4 },
                     )
                     val courses = buildList {
                         var previous = aircraft.position
@@ -82,13 +107,13 @@ class ApproachRoutePlannerTest {
                             previous = point
                         }
                     }
-                    val maximumTurn = (listOf(aircraft.headingDegrees) + courses)
+                    val turns = (listOf(aircraft.headingDegrees) + courses)
                         .zipWithNext { first, second ->
                             abs(Navigation.signedHeadingDifference(first, second))
                         }
-                        .maxOrNull() ?: 0.0
+                    val maximumTurn = turns.maxOrNull() ?: 0.0
                     assertTrue(
-                        "${airport.id}/${entry.id}/${runway.id} turns $maximumTurn°",
+                        "${airport.id}/${entry.id}/${runway.id} turns $maximumTurn°: $turns",
                         maximumTurn <= 45.0,
                     )
                 }

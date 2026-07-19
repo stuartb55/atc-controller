@@ -53,7 +53,7 @@ class RadarGameScreenTest {
     }
 
     @Test
-    fun portraitGuidanceIsGroupedWithCommandsInsteadOfCoveringRadar() {
+    fun portraitGuidanceHasDedicatedSpaceInsteadOfCoveringRadar() {
         composeRule.setContent {
             AtcControllerTheme {
                 Box(Modifier.size(width = 400.dp, height = 860.dp)) {
@@ -65,16 +65,11 @@ class RadarGameScreenTest {
         val radarBounds = composeRule.onNodeWithTag("radar_display")
             .assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot
-        val commandBounds = composeRule.onNodeWithTag("command_panel")
-            .assertIsDisplayed()
-            .fetchSemanticsNode().boundsInRoot
         val guidanceBounds = composeRule.onNodeWithTag("command_guidance")
             .assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot
 
-        assertTrue(guidanceBounds.top >= radarBounds.bottom)
-        assertTrue(guidanceBounds.left >= commandBounds.left)
-        assertTrue(guidanceBounds.right <= commandBounds.right)
+        assertTrue(guidanceBounds.bottom <= radarBounds.top)
     }
 
     @Test
@@ -95,6 +90,47 @@ class RadarGameScreenTest {
             .performClick()
 
         assertTrue(actions.contains(GameAction.SetTimeScale(2)))
+    }
+
+    @Test
+    fun portraitReplayControlsStayCompactAndBackReturnsHome() {
+        val actions = mutableListOf<GameAction>()
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 400.dp, height = 860.dp)) {
+                    GameScreen(
+                        firstMissionState().copy(
+                            training = null,
+                            replay = ReplayUiModel(
+                                tick = 2_717,
+                                terminalTick = 4_750,
+                            ),
+                        ),
+                        actions::add,
+                    )
+                }
+            }
+        }
+
+        val progressBounds = composeRule.onNodeWithText("Replay 2717 / 4750")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        val replayBounds = composeRule.onNodeWithTag("replay_controls")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        val radarBounds = composeRule.onNodeWithTag("radar_display")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(progressBounds.width > progressBounds.height)
+        assertTrue(replayBounds.height < replayBounds.width)
+        assertTrue(radarBounds.height > 0f)
+
+        composeRule.onNodeWithText("Play replay").performClick()
+        composeRule.onNodeWithContentDescription("Back").performClick()
+
+        assertTrue(actions.contains(GameAction.ReplayTogglePlay))
+        assertTrue(actions.contains(GameAction.Navigate(AppScreen.HOME)))
     }
 
     private fun firstMissionState(): GameUiState {

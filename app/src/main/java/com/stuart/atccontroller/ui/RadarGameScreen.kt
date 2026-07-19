@@ -119,6 +119,13 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                 }
                 Spacer(Modifier.height(if (compact) 10.dp else 8.dp))
                 MissionProgressRail(state)
+                state.training?.let { training ->
+                    Spacer(Modifier.height(8.dp))
+                    CommandGuidanceCard(
+                        training = training,
+                        onDismiss = { onAction(GameAction.DismissTutorial) },
+                    )
+                }
                 Spacer(Modifier.height(if (compact) 12.dp else 10.dp))
                 if (stacked) {
                     RadarDisplay(
@@ -188,80 +195,129 @@ private fun ReplayControls(
     val replayEndDescription = stringResource(R.string.replay_seek_end)
     val replayScrubDescription = stringResource(R.string.replay_scrubber)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("replay_controls"),
         color = colors.panel,
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, colors.cyan),
     ) {
         Column {
             Row(
-                Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 7.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-            TextButton(onClick = { onAction(GameAction.ReplayTogglePlay) }) {
-                Text(
-                    stringResource(if (replay.isPlaying) R.string.replay_pause else R.string.replay_play),
-                    color = colors.cyan,
-                )
-            }
-            TextButton(onClick = { onAction(GameAction.ReplayStep) }) {
-                Text(stringResource(R.string.replay_step), color = colors.green)
-            }
-            TextButton(
-                onClick = { onAction(GameAction.ReplaySeek(0)) },
-                modifier = Modifier.semantics {
-                    contentDescription = replayStartDescription
-                },
-            ) {
-                Text("|‹", color = colors.muted)
-            }
-            TextButton(
-                onClick = { onAction(GameAction.ReplaySeek(replay.terminalTick)) },
-                modifier = Modifier.semantics {
-                    contentDescription = replayEndDescription
-                },
-            ) {
-                Text("›|", color = colors.muted)
-            }
-            Text(
-                stringResource(R.string.replay_progress, replay.tick, replay.terminalTick),
-                style = MaterialTheme.typography.labelSmall,
-                color = colors.white,
-                modifier = Modifier.weight(1f),
-            )
-            replay.followedAircraftId?.let { aircraftId ->
-                Text(
-                    stringResource(
-                        R.string.replay_following,
-                        state.aircraft.firstOrNull { it.id == aircraftId }?.callsign ?: aircraftId,
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.cyan,
-                )
-            }
-            if (replay.verification != ReplayVerification.PENDING) {
-                Text(
-                    stringResource(
-                        if (replay.verification == ReplayVerification.VERIFIED) {
-                            R.string.replay_verified
-                        } else {
-                            R.string.replay_verification_failed
-                        },
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (replay.verification == ReplayVerification.VERIFIED) {
-                        colors.green
-                    } else {
-                        colors.red
+                TextButton(
+                    onClick = { onAction(GameAction.ReplayTogglePlay) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        stringResource(
+                            if (replay.isPlaying) R.string.replay_pause else R.string.replay_play,
+                        ),
+                        color = colors.cyan,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(
+                    onClick = { onAction(GameAction.ReplayStep) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(
+                        stringResource(R.string.replay_step),
+                        color = colors.green,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(
+                    onClick = { onAction(GameAction.ReplaySeek(0)) },
+                    modifier = Modifier.semantics {
+                        contentDescription = replayStartDescription
                     },
-                )
-            }
-            listOf(1, 2, 4).forEach { speed ->
-                TextButton(onClick = { onAction(GameAction.ReplaySetSpeed(speed)) }) {
-                    Text("${speed}×", color = if (replay.speed == speed) colors.cyan else colors.muted)
+                ) {
+                    Text("|‹", color = colors.muted)
+                }
+                TextButton(
+                    onClick = { onAction(GameAction.ReplaySeek(replay.terminalTick)) },
+                    modifier = Modifier.semantics {
+                        contentDescription = replayEndDescription
+                    },
+                ) {
+                    Text("›|", color = colors.muted)
                 }
             }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    stringResource(R.string.replay_progress, replay.tick, replay.terminalTick),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.white,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                listOf(1, 2, 4).forEach { speed ->
+                    TextButton(onClick = { onAction(GameAction.ReplaySetSpeed(speed)) }) {
+                        Text(
+                            "${speed}×",
+                            color = if (replay.speed == speed) colors.cyan else colors.muted,
+                        )
+                    }
+                }
+            }
+            if (replay.followedAircraftId != null ||
+                replay.verification != ReplayVerification.PENDING
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    replay.followedAircraftId?.let { aircraftId ->
+                        Text(
+                            stringResource(
+                                R.string.replay_following,
+                                state.aircraft.firstOrNull { it.id == aircraftId }?.callsign
+                                    ?: aircraftId,
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.cyan,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (replay.verification != ReplayVerification.PENDING) {
+                        Text(
+                            stringResource(
+                                if (replay.verification == ReplayVerification.VERIFIED) {
+                                    R.string.replay_verified
+                                } else {
+                                    R.string.replay_verification_failed
+                                },
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (replay.verification == ReplayVerification.VERIFIED) {
+                                colors.green
+                            } else {
+                                colors.red
+                            },
+                            maxLines = 1,
+                        )
+                    }
+                }
             }
             if (replay.terminalTick > 0L) {
                 Slider(
@@ -281,7 +337,9 @@ private fun ReplayControls(
 @Composable
 private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameAction) -> Unit) {
     val colors = MaterialTheme.atcColors
-    val leaveDescription = stringResource(R.string.cd_leave_shift)
+    val leaveDescription = stringResource(
+        if (state.replay != null) R.string.cd_back else R.string.cd_leave_shift,
+    )
     val pauseDescription = stringResource(R.string.cd_pause_simulation)
     val runwaySummary = state.visibleRunways.joinToString(" / ") { it.id }
         .ifBlank { stringResource(R.string.not_available_short) }
@@ -301,7 +359,7 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                         role = Role.Button
                         contentDescription = leaveDescription
                     }
-                    .clickable { onAction(GameAction.RequestAbandonment) },
+                    .clickable { appBackAction(state)?.let(onAction) },
                 color = colors.panel,
                 shape = RoundedCornerShape(12.dp),
                 border = BorderStroke(1.dp, colors.line),
@@ -390,8 +448,10 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                     )
                 }
                 if (state.strikes > 0) StrikeIndicator(state.strikes)
-                CompactTimeControl(state.timeScale, onAction)
-                pauseButton()
+                if (state.replay == null) {
+                    CompactTimeControl(state.timeScale, onAction)
+                    pauseButton()
+                }
             }
         } else {
             Row(
@@ -405,8 +465,10 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                 DataPill(stringResource(R.string.time), formatElapsed(state.elapsedSeconds))
                 DataPill(stringResource(R.string.score), localizedInteger(state.score), accent = colors.amber)
                 StrikeIndicator(state.strikes)
-                TimeControl(state.timeScale, onAction)
-                pauseButton()
+                if (state.replay == null) {
+                    TimeControl(state.timeScale, onAction)
+                    pauseButton()
+                }
             }
         }
     }
@@ -1887,12 +1949,6 @@ private fun CommandPanel(
                         .padding(if (compact) 10.dp else 14.dp),
                     verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
                 ) {
-                    state.training?.let { training ->
-                        CommandGuidanceCard(
-                            training = training,
-                            onDismiss = { onAction(GameAction.DismissTutorial) },
-                        )
-                    }
                     when (page) {
                         CommandPanelPage.OVERVIEW -> {
                             OperationsOverview(state)
@@ -1940,7 +1996,6 @@ private fun AircraftControlPage(
         aircraft = aircraft,
         onDeselect = { onAction(GameAction.SelectAircraft(null)) },
     )
-    SectionLabel(stringResource(R.string.clearance))
     PrimaryClearanceActions(aircraft, state, onAction)
     SectionLabel(stringResource(R.string.vector_controls))
     CompactVectorControls(aircraft, onAction)
@@ -2838,7 +2893,7 @@ private fun FlightStrip(
         border = BorderStroke(1.dp, colors.greenDim),
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
+            Modifier.fillMaxWidth().padding(start = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TinyPlane(

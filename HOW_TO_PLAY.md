@@ -28,8 +28,9 @@ Use this reliable sequence:
 1. Follow the action-gated Academy prompts, or skip the lesson and take control.
 2. Leave simulation speed at **1×** while learning.
 3. When NORTH 201 appears, tap its aircraft symbol or callsign label.
-4. In the right-hand command panel, tap **Set up approach**. This creates a short final route,
-   selects ground level as the target altitude, and selects a safe landing speed.
+4. In the right-hand command panel, tap **Set up approach**. This creates a sequence of gentle
+   vectors onto final, using a suitable named fix when one lies on the transition. It also selects
+   ground level as the target altitude and a safe landing speed.
 5. Tap **Clear to land — 23R**. A landing clearance may be issued before the aircraft reaches final;
    it will land once it is aligned, low and slow enough.
 6. Repeat those three actions—select, **Set up approach**, **Clear to land**—when CLOUD 314 and
@@ -50,8 +51,10 @@ send the following aircraft via another named waypoint before setting up its fin
   fixes. **Undo waypoint** removes the last instruction and **Clear route** cancels the sequence.
 - **Move and zoom the radar:** Drag the chart to pan, pinch to zoom, or use the zoom controls in the
   lower-right corner. Tapping the zoom percentage resets the view.
-- **Set up approach:** For an arrival, creates a flyable final route to its assigned runway and sets
-  safe landing altitude and speed targets. You still decide when to clear it to land.
+- **Set up approach:** For an arrival, creates progressive vectors to a stable final for its
+  assigned runway. It uses a published waypoint when that produces a sensible transition and
+  otherwise supplies vectors, with course changes limited to flyable angles. It also sets safe
+  landing altitude and speed targets; you still decide when to clear it to land.
 - **Altitude − / +:** Changes target altitude in 500 ft steps. The aircraft climbs or descends
   gradually.
 - **Speed − / +:** Changes target speed in 10 kt steps. Different aircraft classes accelerate,

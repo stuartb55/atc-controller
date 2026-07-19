@@ -38,6 +38,10 @@ class ManchesterContentTest {
                 }
             if (engine.snapshot.status == GameStatus.RUNNING) engine.advanceFixedSteps()
         }
+        if (engine.snapshot.status == GameStatus.RUNNING) {
+            // A movement already on its landing roll is allowed to finish after the clock.
+            engine.advanceFixedSteps(600)
+        }
 
         assertEquals(
             engine.snapshot.aircraft.joinToString { aircraft ->

@@ -437,7 +437,7 @@ sealed interface GameAction {
     data class SetTargetAltitude(val feet: Int) : GameAction
     data class SetTargetSpeed(val knots: Int) : GameAction
     data class SetTargetHeading(val degrees: Int) : GameAction
-    /** Builds a stable final route and selects safe landing altitude/speed targets. */
+    /** Builds progressive vectors via a suitable named fix onto final and selects safe targets. */
     data object PrepareApproach : GameAction
     data class IssueClearance(val type: ClearanceType) : GameAction
     data class AssignRunway(val runwayId: String) : GameAction
