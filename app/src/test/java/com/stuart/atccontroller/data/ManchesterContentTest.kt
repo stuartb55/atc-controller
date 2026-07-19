@@ -6,8 +6,6 @@ import com.stuart.atccontroller.simulation.AtcSimulationEngine
 import com.stuart.atccontroller.simulation.GameEvent
 import com.stuart.atccontroller.simulation.GameStatus
 import com.stuart.atccontroller.simulation.PlayerCommand
-import com.stuart.atccontroller.simulation.Route
-import com.stuart.atccontroller.simulation.Vec2
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -31,10 +29,7 @@ class ManchesterContentTest {
                     engine.submit(
                         PlayerCommand.SetRoute(
                             aircraft.id,
-                            Route(
-                                ManchesterContent.finalApproachPoints(runwayId)
-                                    .map { Vec2(it.x, it.y) },
-                            ),
+                            ApproachRoutePlanner.plan(aircraft, ManchesterContent.airport, runwayId).route,
                         ),
                     )
                     engine.submit(PlayerCommand.SetTargetAltitude(aircraft.id, 0.0))
@@ -44,7 +39,14 @@ class ManchesterContentTest {
             if (engine.snapshot.status == GameStatus.RUNNING) engine.advanceFixedSteps()
         }
 
-        assertEquals(GameStatus.COMPLETED, engine.snapshot.status)
+        assertEquals(
+            engine.snapshot.aircraft.joinToString { aircraft ->
+                "${aircraft.id}:${aircraft.status}:route=${aircraft.routeIndex}/${aircraft.route.waypoints.size}:" +
+                    "pos=${aircraft.position}:hdg=${aircraft.headingDegrees.toInt()}"
+            },
+            GameStatus.COMPLETED,
+            engine.snapshot.status,
+        )
         assertEquals(3, engine.snapshot.score.safeArrivals)
         assertTrue(engine.snapshot.events.any { it is GameEvent.ScenarioCompleted })
         assertEquals(0, engine.snapshot.objectives.minimumScore)

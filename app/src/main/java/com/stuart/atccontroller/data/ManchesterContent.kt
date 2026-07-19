@@ -1,8 +1,5 @@
 package com.stuart.atccontroller.data
 
-import com.stuart.atccontroller.simulation.Navigation
-import com.stuart.atccontroller.simulation.Vec2
-
 /**
  * Authored game content inspired by Manchester Airport. Published fixes are compressed into the
  * playable terminal-area geometry while retaining their broad position relative to the airport.
@@ -395,24 +392,6 @@ object ManchesterContent {
     val missionIds: List<String> = authoredMissions.map(ScenarioDefinition::id)
 
     fun mission(id: String): ScenarioDefinition? = authoredMissions.firstOrNull { it.id == id }
-
-    /** A short, flyable final; the decorative outer gate can add too much beginner traffic time. */
-    fun finalApproachPoints(runwayEndId: String, interceptDistanceNm: Double = 2.5): List<NormalizedPoint> {
-        require(interceptDistanceNm > 0.0 && interceptDistanceNm.isFinite())
-        val runway = airport.runwayEnds.firstOrNull { it.id == runwayEndId }
-            ?: error("Unknown runway end $runwayEndId")
-        val intercept = Navigation.move(
-            position = Vec2(runway.threshold.x, runway.threshold.y),
-            headingDegrees = runway.headingDegrees + 180.0,
-            distanceNm = interceptDistanceNm,
-            mapWidthNm = airport.mapWidthNm,
-            mapHeightNm = airport.mapHeightNm,
-        )
-        return listOf(
-            NormalizedPoint(intercept.x, intercept.y),
-            runway.threshold,
-        )
-    }
 
     fun nextMissionId(afterMissionId: String): String? {
         val index = missionIds.indexOf(afterMissionId)

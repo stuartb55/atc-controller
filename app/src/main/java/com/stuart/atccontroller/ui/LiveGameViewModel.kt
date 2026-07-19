@@ -10,6 +10,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.stuart.atccontroller.R
 import com.stuart.atccontroller.data.ActiveSessionRecord
+import com.stuart.atccontroller.data.ApproachRoutePlanner
 import com.stuart.atccontroller.data.CompletedReplayRecord
 import com.stuart.atccontroller.data.ControllerServiceRecord
 import com.stuart.atccontroller.data.ContentRegistry
@@ -60,6 +61,7 @@ import com.stuart.atccontroller.simulation.GameSnapshot
 import com.stuart.atccontroller.simulation.GameStatus
 import com.stuart.atccontroller.simulation.HandoffStatus
 import com.stuart.atccontroller.simulation.HoldTurnDirection
+import com.stuart.atccontroller.simulation.Navigation
 import com.stuart.atccontroller.simulation.PlayerCommand
 import com.stuart.atccontroller.simulation.Route
 import com.stuart.atccontroller.simulation.Vec2
@@ -927,12 +929,26 @@ class LiveGameViewModel internal constructor(
                         terminalTarget,
                         aircraft.runwayId,
                         aircraft.operation == FlightOperation.ARRIVAL,
-                    )) {
+                )) {
                     return
                 }
-                val final = finalApproachPoints(terminalTarget.runwayId).map {
-                    NormalizedPoint(it.x.toFloat(), it.y.toFloat())
-                }
+                val airport = activeAirport()
+                val routeStart = points.lastOrNull()?.let { last ->
+                    val position = Vec2(last.x.toDouble(), last.y.toDouble())
+                    val heading = points.getOrNull(points.lastIndex - 1)?.let { previous ->
+                        Navigation.bearingDegrees(
+                            Vec2(previous.x.toDouble(), previous.y.toDouble()),
+                            position,
+                            airport.mapWidthNm,
+                            airport.mapHeightNm,
+                        )
+                    } ?: aircraft.headingDegrees
+                    aircraft.copy(position = position, headingDegrees = heading)
+                } ?: aircraft
+                val final = ApproachRoutePlanner.plan(routeStart, airport, terminalTarget.runwayId)
+                    .route.waypoints.map {
+                        NormalizedPoint(it.x.toFloat(), it.y.toFloat())
+                    }
                 composeApproachRoute(points, final)
             }
             is RouteTerminalTarget.NavigationFix -> {
@@ -966,8 +982,9 @@ class LiveGameViewModel internal constructor(
     }
 
     /**
-     * Touch-friendly equivalent to drawing an exact final and repeatedly stepping altitude and
-     * speed down. The three engine commands remain explicit in the deterministic replay log.
+     * Touch-friendly equivalent to issuing a sequence of vectors (and a published fix when it is
+     * useful) onto final, then repeatedly stepping altitude and speed down. The three engine
+     * commands remain explicit in the deterministic replay log.
      */
     private fun prepareApproach() {
         val aircraft = uiState.selectedAircraftId?.let { selectedId ->
@@ -975,7 +992,7 @@ class LiveGameViewModel internal constructor(
         } ?: return
         if (aircraft.operation != FlightOperation.ARRIVAL) return
         val runwayId = aircraft.runwayId ?: return
-        val finalApproach = finalApproachPoints(runwayId)
+        val approachRoute = ApproachRoutePlanner.plan(aircraft, activeAirport(), runwayId).route
         val expectedAction = currentTrainingStep()?.action
         trainingRejectionMessage = null
         suppressTrainingObservation = true
@@ -983,9 +1000,7 @@ class LiveGameViewModel internal constructor(
             submit(
                 PlayerCommand.SetRoute(
                     aircraft.id,
-                    Route(
-                        finalApproach.map { Vec2(it.x, it.y) },
-                    ),
+                    approachRoute,
                 ),
             )
             submit(PlayerCommand.SetTargetAltitude(aircraft.id, 0.0))
@@ -2526,23 +2541,6 @@ class LiveGameViewModel internal constructor(
             ?.airportId
             ?.let(ContentRegistry::airport)
         ?: checkNotNull(ContentRegistry.pack(ContentRegistry.DEFAULT_PACK_ID)).airport
-
-    private fun finalApproachPoints(runwayEndId: String): List<com.stuart.atccontroller.data.NormalizedPoint> {
-        val airport = activeAirport()
-        val runway = airport.runwayEnds.firstOrNull { it.id == runwayEndId }
-            ?: error("Unknown runway end $runwayEndId for ${airport.id}")
-        val intercept = com.stuart.atccontroller.simulation.Navigation.move(
-            position = Vec2(runway.threshold.x, runway.threshold.y),
-            headingDegrees = runway.headingDegrees + 180.0,
-            distanceNm = 2.5,
-            mapWidthNm = airport.mapWidthNm,
-            mapHeightNm = airport.mapHeightNm,
-        )
-        return listOf(
-            com.stuart.atccontroller.data.NormalizedPoint(intercept.x, intercept.y),
-            runway.threshold,
-        )
-    }
 
     private fun emitFeedback(events: List<GameEvent>) {
         val kind = events.mapNotNull(GameEvent::feedbackKind).maxByOrNull(LiveFeedbackKind::priority)

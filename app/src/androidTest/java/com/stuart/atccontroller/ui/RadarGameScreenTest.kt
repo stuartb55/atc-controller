@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
@@ -48,6 +50,51 @@ class RadarGameScreenTest {
         composeRule.onNodeWithText("090°").assertIsDisplayed()
         composeRule.onNodeWithText("FL30").assertIsDisplayed()
         composeRule.onNodeWithText("160 kt").assertIsDisplayed()
+    }
+
+    @Test
+    fun portraitGuidanceIsGroupedWithCommandsInsteadOfCoveringRadar() {
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 400.dp, height = 860.dp)) {
+                    GameScreen(firstMissionState()) {}
+                }
+            }
+        }
+
+        val radarBounds = composeRule.onNodeWithTag("radar_display")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        val commandBounds = composeRule.onNodeWithTag("command_panel")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+        val guidanceBounds = composeRule.onNodeWithTag("command_guidance")
+            .assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(guidanceBounds.top >= radarBounds.bottom)
+        assertTrue(guidanceBounds.left >= commandBounds.left)
+        assertTrue(guidanceBounds.right <= commandBounds.right)
+    }
+
+    @Test
+    fun compactHudKeepsTimeScoreAndSpeedAccessible() {
+        val actions = mutableListOf<GameAction>()
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 400.dp, height = 860.dp)) {
+                    GameScreen(firstMissionState(), actions::add)
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("RWY 23R · 00:24 · 120 pts").assertIsDisplayed()
+        composeRule
+            .onNodeWithContentDescription("Simulation speed 1×. Tap to change to 2×")
+            .assertIsDisplayed()
+            .performClick()
+
+        assertTrue(actions.contains(GameAction.SetTimeScale(2)))
     }
 
     private fun firstMissionState(): GameUiState {

@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -105,20 +106,20 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
         val compact = (maxWidth < 800.dp) || (maxHeight < 430.dp)
         val stacked = (maxWidth < 680.dp) && (maxHeight >= 520.dp)
         val commandDeckHeight = when {
-            maxHeight < 700.dp -> 272.dp
-            maxHeight < 850.dp -> 304.dp
-            else -> 336.dp
+            maxHeight < 700.dp -> 276.dp
+            maxHeight < 850.dp -> 316.dp
+            else -> 360.dp
         }
         Box(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().padding(if (compact) 8.dp else 12.dp)) {
+            Column(Modifier.fillMaxSize().padding(if (compact) 10.dp else 12.dp)) {
                 GameStatusBar(state, compact, onAction)
                 state.replay?.let { replay ->
                     Spacer(Modifier.height(5.dp))
                     ReplayControls(replay, state, onAction)
                 }
-                Spacer(Modifier.height(if (compact) 6.dp else 8.dp))
+                Spacer(Modifier.height(if (compact) 10.dp else 8.dp))
                 MissionProgressRail(state)
-                Spacer(Modifier.height(if (compact) 7.dp else 10.dp))
+                Spacer(Modifier.height(if (compact) 12.dp else 10.dp))
                 if (stacked) {
                     RadarDisplay(
                         state = state,
@@ -128,10 +129,9 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                         onSelectEvent = { sequence, aircraftId ->
                             onAction(GameAction.SelectEvent(sequence, aircraftId))
                         },
-                        onDismissTraining = { onAction(GameAction.DismissTutorial) },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(12.dp))
                     CommandPanel(
                         state = state,
                         onAction = onAction,
@@ -153,7 +153,6 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                             onSelectEvent = { sequence, aircraftId ->
                                 onAction(GameAction.SelectEvent(sequence, aircraftId))
                             },
-                            onDismissTraining = { onAction(GameAction.DismissTutorial) },
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                         )
                         CommandPanel(
@@ -284,6 +283,14 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
     val colors = MaterialTheme.atcColors
     val leaveDescription = stringResource(R.string.cd_leave_shift)
     val pauseDescription = stringResource(R.string.cd_pause_simulation)
+    val runwaySummary = state.visibleRunways.joinToString(" / ") { it.id }
+        .ifBlank { stringResource(R.string.not_available_short) }
+    val sessionTitle = when {
+        state.isDailySession -> stringResource(R.string.daily_shift_hud)
+        state.isPracticeSession -> stringResource(R.string.custom_practice_shift)
+        state.configurationIdentity != null -> stringResource(R.string.ranked_seeded_shift)
+        else -> state.selectedMission?.title ?: stringResource(R.string.active_sector)
+    }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val narrow = maxWidth < 650.dp
         val leaveButton: @Composable () -> Unit = {
@@ -309,20 +316,14 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                 Text(
                     stringResource(
                         R.string.approach_header,
-                        state.visibleRunways.joinToString(" / ") { it.id }
-                            .ifBlank { stringResource(R.string.not_available_short) },
+                        runwaySummary,
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = colors.green,
                     maxLines = 1,
                 )
                 Text(
-                    when {
-                        state.isDailySession -> stringResource(R.string.daily_shift_hud)
-                        state.isPracticeSession -> stringResource(R.string.custom_practice_shift)
-                        state.configurationIdentity != null -> stringResource(R.string.ranked_seeded_shift)
-                        else -> state.selectedMission?.title ?: stringResource(R.string.active_sector)
-                    },
+                    sessionTitle,
                     style = MaterialTheme.typography.titleMedium,
                     color = colors.white,
                     maxLines = 1,
@@ -361,27 +362,36 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
         }
 
         if (narrow) {
-            Column(Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier.fillMaxWidth().height(48.dp),
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    leaveButton()
-                    Box(Modifier.weight(1f)) { title() }
-                    pauseButton()
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                leaveButton()
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        sessionTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.white,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        stringResource(
+                            R.string.compact_hud_summary,
+                            runwaySummary,
+                            formatElapsed(state.elapsedSeconds),
+                            localizedInteger(state.score),
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    DataPill(stringResource(R.string.time), formatElapsed(state.elapsedSeconds), Modifier.weight(1f))
-                    DataPill(stringResource(R.string.score), localizedInteger(state.score), Modifier.weight(1f), colors.amber)
-                    StrikeIndicator(state.strikes)
-                    TimeControl(state.timeScale, onAction)
-                }
+                if (state.strikes > 0) StrikeIndicator(state.strikes)
+                CompactTimeControl(state.timeScale, onAction)
+                pauseButton()
             }
         } else {
             Row(
@@ -442,85 +452,141 @@ private fun MissionProgressRail(state: GameUiState) {
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, borderColor),
     ) {
-        Row(
-            Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    stringResource(R.string.objectives).uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.muted,
-                )
-                if (objective != null && objectiveLabel != null) {
+        BoxWithConstraints {
+            val compactRail = maxWidth < 520.dp
+            if (compactRail) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (objective != null && objectiveLabel != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (objective.passed) "✓" else "○",
+                                color = if (objective.passed) colors.green else colors.cyan,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Spacer(Modifier.width(7.dp))
+                            Text(
+                                objectiveLabel,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = colors.white,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                "${objective.current}/${objective.target}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (objective.passed) colors.green else colors.cyan,
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = {
+                                if (objective.target <= 0) 1f else {
+                                    (objective.current.toFloat() / objective.target).coerceIn(0f, 1f)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
+                            color = if (objective.passed) colors.green else colors.cyan,
+                            trackColor = colors.line,
+                        )
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            if (objective.passed) "✓" else "○",
-                            color = if (objective.passed) colors.green else colors.cyan,
-                            fontWeight = FontWeight.Bold,
+                            timeLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = deadlineColor,
+                            maxLines = 1,
                         )
-                        Spacer(Modifier.width(6.dp))
+                        Text("  •  ", style = MaterialTheme.typography.labelSmall, color = colors.line)
                         Text(
-                            objectiveLabel,
+                            pluralStringResource(
+                                R.plurals.movements_remaining,
+                                state.movementsRemaining,
+                                state.movementsRemaining,
+                            ),
                             modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        StarRating(state.starForecast.securedStars, compact = true)
+                    }
+                }
+            } else {
+                Row(
+                    Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            stringResource(R.string.objectives).uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                        )
+                        if (objective != null && objectiveLabel != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    if (objective.passed) "✓" else "○",
+                                    color = if (objective.passed) colors.green else colors.cyan,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    objectiveLabel,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = colors.white,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "${objective.current}/${objective.target}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (objective.passed) colors.green else colors.cyan,
+                                )
+                            }
+                            LinearProgressIndicator(
+                                progress = {
+                                    if (objective.target <= 0) 1f else {
+                                        (objective.current.toFloat() / objective.target).coerceIn(0f, 1f)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
+                                color = if (objective.passed) colors.green else colors.cyan,
+                                trackColor = colors.line,
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.widthIn(max = 132.dp),
+                        horizontalAlignment = Alignment.End,
+                    ) {
+                        Text(
+                            timeLabel,
                             style = MaterialTheme.typography.labelMedium,
-                            color = colors.white,
+                            color = deadlineColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            "${objective.current}/${objective.target}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (objective.passed) colors.green else colors.cyan,
+                            pluralStringResource(
+                                R.plurals.movements_remaining,
+                                state.movementsRemaining,
+                                state.movementsRemaining,
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    LinearProgressIndicator(
-                        progress = {
-                            if (objective.target <= 0) 1f else {
-                                (objective.current.toFloat() / objective.target).coerceIn(0f, 1f)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape),
-                        color = if (objective.passed) colors.green else colors.cyan,
-                        trackColor = colors.line,
-                    )
-                } else {
-                    Text(
-                        pluralStringResource(
-                            R.plurals.movements_remaining,
-                            state.movementsRemaining,
-                            state.movementsRemaining,
-                        ),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = colors.white,
-                    )
+                    StarRating(state.starForecast.securedStars, compact = true)
                 }
             }
-            Column(
-                modifier = Modifier.widthIn(max = 132.dp),
-                horizontalAlignment = Alignment.End,
-            ) {
-                Text(
-                    timeLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = deadlineColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    pluralStringResource(
-                        R.plurals.movements_remaining,
-                        state.movementsRemaining,
-                        state.movementsRemaining,
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.muted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            StarRating(state.starForecast.securedStars, compact = true)
         }
     }
 }
@@ -594,13 +660,40 @@ private fun TimeControl(timeScale: Int, onAction: (GameAction) -> Unit) {
 }
 
 @Composable
+private fun CompactTimeControl(timeScale: Int, onAction: (GameAction) -> Unit) {
+    val colors = MaterialTheme.atcColors
+    val nextScale = if (timeScale == 1) 2 else 1
+    val currentDescription = stringResource(R.string.cd_simulation_speed, timeScale)
+    val changeDescription = stringResource(R.string.cd_change_simulation_speed, nextScale)
+    Surface(
+        modifier = Modifier
+            .size(48.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = "$currentDescription. $changeDescription"
+            }
+            .clickable { onAction(GameAction.SetTimeScale(nextScale)) },
+        color = colors.panel,
+        shape = RoundedCornerShape(11.dp),
+        border = BorderStroke(1.dp, colors.line),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                stringResource(R.string.simulation_speed_value, timeScale),
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.green,
+            )
+        }
+    }
+}
+
+@Composable
 private fun RadarDisplay(
     state: GameUiState,
     onSelectAircraft: (String?) -> Unit,
     onDirectToFix: (String) -> Unit,
     onCycleConflict: (Int) -> Unit,
     onSelectEvent: (Long, String?) -> Unit,
-    onDismissTraining: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
@@ -622,7 +715,7 @@ private fun RadarDisplay(
     }
 
     Surface(
-        modifier = modifier,
+        modifier = modifier.testTag("radar_display"),
         color = colors.radar,
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, colors.line),
@@ -858,20 +951,6 @@ private fun RadarDisplay(
                 )
             }
 
-            state.training?.let { training ->
-                RadarTutorialCard(
-                    training = training,
-                    onDismiss = onDismissTraining,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(
-                            start = 9.dp,
-                            top = if (state.conflicts.isEmpty()) 9.dp else 68.dp,
-                            end = 9.dp,
-                        ),
-                )
-            }
-
             latestFeedbackEvent(state.eventFeed, state.elapsedSeconds)?.let { entry ->
                 val aircraftId = entry.aircraftIds.firstOrNull { aircraftId ->
                     state.aircraft.any { it.id == aircraftId }
@@ -913,42 +992,27 @@ private fun RadarContextPanel(state: GameUiState, modifier: Modifier = Modifier)
     val colors = MaterialTheme.atcColors
     val selected = state.selectedAircraft
     Surface(
-        modifier = modifier.widthIn(max = 190.dp),
+        modifier = modifier.widthIn(max = 172.dp),
         color = colors.night.copy(alpha = .9f),
         shape = RoundedCornerShape(10.dp),
         border = BorderStroke(1.dp, colors.line.copy(alpha = .82f)),
     ) {
         Column(
-            Modifier.padding(horizontal = 9.dp, vertical = 7.dp),
+            Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TinyPlane(
-                    Modifier.size(16.dp),
-                    if (selected == null) colors.green else colors.cyan,
-                )
-                Spacer(Modifier.width(6.dp))
-                Column(Modifier.weight(1f)) {
+            if (selected == null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TinyPlane(Modifier.size(16.dp), colors.green)
+                    Spacer(Modifier.width(6.dp))
                     Text(
-                        selected?.callsign ?: stringResource(R.string.radar_hint_select),
+                        stringResource(R.string.radar_hint_select),
+                        modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (selected == null) colors.muted else colors.cyan,
+                        color = colors.muted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    selected?.let { aircraft ->
-                        Text(
-                            stringResource(
-                                R.string.compact_aircraft_summary,
-                                aircraft.altitudeFeet / 100,
-                                aircraft.speedKnots,
-                                normalizedHeading(aircraft.headingDegrees),
-                            ),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = colors.white,
-                            maxLines = 1,
-                        )
-                    }
                 }
             }
             state.visibleRunways.take(2).forEach { runway ->
@@ -976,7 +1040,7 @@ private fun RadarContextPanel(state: GameUiState, modifier: Modifier = Modifier)
 }
 
 @Composable
-private fun RadarTutorialCard(
+private fun CommandGuidanceCard(
     training: TrainingUiModel,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
@@ -989,17 +1053,16 @@ private fun RadarTutorialCard(
     )
     Surface(
         modifier = modifier
-            .fillMaxWidth(.9f)
-            .widthIn(max = 370.dp)
+            .fillMaxWidth()
+            .testTag("command_guidance")
             .semantics { paneTitle = paneDescription },
-        shape = RoundedCornerShape(14.dp),
-        color = colors.panel.copy(alpha = .96f),
+        shape = RoundedCornerShape(10.dp),
+        color = colors.night.copy(alpha = .62f),
         border = BorderStroke(1.dp, if (training.rejectionMessage == null) colors.cyan else colors.amber),
-        shadowElevation = 10.dp,
     ) {
         Row(
-            Modifier.padding(start = 12.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.Top,
+            Modifier.padding(start = 10.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
@@ -1012,9 +1075,9 @@ private fun RadarTutorialCard(
                 )
                 Text(
                     training.prompt,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = colors.white,
-                    maxLines = 3,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 training.rejectionMessage?.let { rejection ->
@@ -1803,7 +1866,7 @@ private fun CommandPanel(
 ) {
     val colors = MaterialTheme.atcColors
     Surface(
-        modifier = modifier,
+        modifier = modifier.testTag("command_panel"),
         color = colors.panel.copy(alpha = .96f),
         shape = RoundedCornerShape(16.dp),
         border = BorderStroke(1.dp, colors.line),
@@ -1822,8 +1885,14 @@ private fun CommandPanel(
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
                         .padding(if (compact) 10.dp else 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(if (compact) 9.dp else 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (compact) 10.dp else 12.dp),
                 ) {
+                    state.training?.let { training ->
+                        CommandGuidanceCard(
+                            training = training,
+                            onDismiss = { onAction(GameAction.DismissTutorial) },
+                        )
+                    }
                     when (page) {
                         CommandPanelPage.OVERVIEW -> {
                             OperationsOverview(state)
@@ -1889,51 +1958,91 @@ private fun PrimaryClearanceActions(
     val runway = aircraft.assignedRunway
         ?: state.visibleRunways.firstOrNull()?.id
         ?: stringResource(R.string.not_available_short)
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val narrow = maxWidth < 430.dp
         if (aircraft.phase == FlightPhase.DEPARTURE) {
-            if (state.runwayProceduresEnabled) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (state.runwayProceduresEnabled) {
+                    QuickCommandButton(
+                        label = stringResource(R.string.line_up_wait),
+                        caption = runway,
+                        accent = colors.cyan,
+                        onClick = { onAction(GameAction.LineUpAndWait) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 QuickCommandButton(
-                    label = stringResource(R.string.line_up_wait),
+                    label = stringResource(R.string.clear_takeoff),
                     caption = runway,
-                    accent = colors.cyan,
-                    onClick = { onAction(GameAction.LineUpAndWait) },
+                    accent = colors.green,
+                    onClick = { onAction(GameAction.IssueClearance(ClearanceType.TAKE_OFF)) },
                     modifier = Modifier.weight(1f),
                 )
             }
-            QuickCommandButton(
-                label = stringResource(R.string.clear_takeoff),
-                caption = runway,
-                accent = colors.green,
-                onClick = { onAction(GameAction.IssueClearance(ClearanceType.TAKE_OFF)) },
-                modifier = Modifier.weight(1f),
-            )
+        } else if (narrow) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (state.approachSetupAssistEnabled) {
+                        QuickCommandButton(
+                            label = stringResource(R.string.prepare_approach),
+                            caption = runway,
+                            accent = colors.cyan,
+                            onClick = { onAction(GameAction.PrepareApproach) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    QuickCommandButton(
+                        label = stringResource(R.string.clear_land),
+                        caption = runway,
+                        accent = colors.green,
+                        onClick = { onAction(GameAction.IssueClearance(ClearanceType.LAND)) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                QuickCommandButton(
+                    label = stringResource(R.string.go_around),
+                    caption = stringResource(R.string.climb_feet, localizedInteger(3_000)),
+                    accent = colors.amber,
+                    onClick = { onAction(GameAction.IssueClearance(ClearanceType.GO_AROUND)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    compactHorizontal = true,
+                )
+            }
         } else {
-            if (state.approachSetupAssistEnabled) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (state.approachSetupAssistEnabled) {
+                    QuickCommandButton(
+                        label = stringResource(R.string.prepare_approach),
+                        caption = runway,
+                        accent = colors.cyan,
+                        onClick = { onAction(GameAction.PrepareApproach) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 QuickCommandButton(
-                    label = stringResource(R.string.prepare_approach),
+                    label = stringResource(R.string.clear_land),
                     caption = runway,
-                    accent = colors.cyan,
-                    onClick = { onAction(GameAction.PrepareApproach) },
+                    accent = colors.green,
+                    onClick = { onAction(GameAction.IssueClearance(ClearanceType.LAND)) },
+                    modifier = Modifier.weight(1f),
+                )
+                QuickCommandButton(
+                    label = stringResource(R.string.go_around),
+                    caption = stringResource(R.string.climb_feet, localizedInteger(3_000)),
+                    accent = colors.amber,
+                    onClick = { onAction(GameAction.IssueClearance(ClearanceType.GO_AROUND)) },
                     modifier = Modifier.weight(1f),
                 )
             }
-            QuickCommandButton(
-                label = stringResource(R.string.clear_land),
-                caption = runway,
-                accent = colors.green,
-                onClick = { onAction(GameAction.IssueClearance(ClearanceType.LAND)) },
-                modifier = Modifier.weight(1f),
-            )
-            QuickCommandButton(
-                label = stringResource(R.string.go_around),
-                caption = stringResource(R.string.climb_feet, localizedInteger(3_000)),
-                accent = colors.amber,
-                onClick = { onAction(GameAction.IssueClearance(ClearanceType.GO_AROUND)) },
-                modifier = Modifier.weight(1f),
-            )
         }
     }
 }
@@ -1945,12 +2054,13 @@ private fun QuickCommandButton(
     accent: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compactHorizontal: Boolean = false,
 ) {
     val colors = MaterialTheme.atcColors
     val description = stringResource(R.string.cd_clearance_action, label, caption)
     Surface(
         modifier = modifier
-            .heightIn(min = 76.dp)
+            .heightIn(min = if (compactHorizontal) 52.dp else 76.dp)
             .semantics {
                 role = Role.Button
                 contentDescription = description
@@ -1960,25 +2070,49 @@ private fun QuickCommandButton(
         shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, accent.copy(alpha = .78f)),
     ) {
-        Column(
-            Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            StatusDot(accent)
-            Text(
-                label.uppercase(),
-                style = MaterialTheme.typography.labelLarge,
-                color = accent,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                caption,
-                style = MaterialTheme.typography.labelSmall,
-                color = colors.muted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        if (compactHorizontal) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                StatusDot(accent)
+                Text(
+                    label.uppercase(),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = accent,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    caption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        } else {
+            Column(
+                Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                StatusDot(accent)
+                Text(
+                    label.uppercase(),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = accent,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    caption,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

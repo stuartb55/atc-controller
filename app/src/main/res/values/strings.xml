@@ -157,10 +157,12 @@
     <string name="approach_header">Approach sector • %1$s</string>
     <string name="active_sector">Active sector</string>
     <string name="cd_pause_simulation">Pause simulation</string>
+    <string name="compact_hud_summary">RWY %1$s · %2$s · %3$s pts</string>
     <string name="time">Time</string>
     <string name="score">Score</string>
     <string name="cd_separation_strikes">%1$d of 3 separation strikes</string>
     <string name="cd_simulation_speed">Simulation speed %1$d×</string>
+    <string name="cd_change_simulation_speed">Tap to change to %1$d×</string>
     <string name="simulation_speed_value">%1$d×</string>
     <string name="radar_hint_select">Tap an aircraft to control</string>
     <string name="zoom_in">Zoom in</string>
