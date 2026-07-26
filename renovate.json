@@ -5,20 +5,6 @@
   ],
   "dependencyDashboard": true,
   "automerge": true,
-  "automergeType": "pr",
   "platformAutomerge": true,
   "ignoreTests": false,
-  "customManagers": [
-    {
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^\\.github\\/workflows\\/renovate\\.yml$/"
-      ],
-      "matchStrings": [
-        "renovate-version:\\s*(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
-      "depNameTemplate": "ghcr.io/renovatebot/renovate",
-      "datasourceTemplate": "docker"
-    }
-  ]
 }
