@@ -1,10 +1,28 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
   ],
   "dependencyDashboard": true,
-  "automerge": true,
-  "platformAutomerge": true,
+  "automerge": false,
+  "platformAutomerge": false,
   "ignoreTests": false,
+  "packageRules": [
+    {
+      "description": "Group immutable GitHub Action digest updates for review",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group Gradle dependency updates for verification-metadata review",
+      "matchManagers": [
+        "gradle",
+        "gradle-wrapper"
+      ],
+      "groupName": "gradle-dependencies"
+    }
+  ]
 }
