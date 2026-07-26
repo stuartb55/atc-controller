@@ -219,6 +219,7 @@ class LiveGameViewModel internal constructor(
     private var checkpointingDisabled = false
     private var restoreJob: Job? = null
     private var checkpointJob: Job? = null
+    private var trainingPersistenceJob: Job? = null
     private var sessionValidationJob: Job? = null
     private var validatedSessionKey: SessionRecordKey? = null
     private var validatedSessionAvailable = false
@@ -577,7 +578,11 @@ class LiveGameViewModel internal constructor(
         }
         val callsigns = snapshot?.aircraft?.associate { it.id to it.callsign }.orEmpty()
         uiState = uiState.copy(
-            missions = missionModels(resources, playerData.progress),
+            missions = missionModels(
+                resources,
+                playerData.progress,
+                playerData.trainingState.completedLessonIds,
+            ),
             career = careerModel(playerData.progress),
             serviceRecord = serviceRecordUi(playerData.serviceRecord, playerData.progress),
             aircraft = localizedAircraft ?: uiState.aircraft,
@@ -630,7 +635,7 @@ class LiveGameViewModel internal constructor(
             activeStep = 0,
         )
         playerData = playerData.copy(trainingState = trainingState)
-        viewModelScope.launch { preferences.saveTrainingState(trainingState) }
+        persistTrainingState(trainingState)
         startScenario(SessionDescriptor.Training(missionId))
     }
 
@@ -1052,9 +1057,7 @@ class LiveGameViewModel internal constructor(
             lastSnapshot?.let { snapshot ->
                 uiState = uiState.copy(training = trainingUi(snapshot))
             }
-            viewModelScope.launch {
-                preferences.saveTrainingState(trainingState)
-            }
+            persistTrainingState(trainingState)
             checkpoint()
         }
     }
@@ -1098,10 +1101,7 @@ class LiveGameViewModel internal constructor(
                 isPaused = false,
             )
             persistUiState()
-            checkpointJob = viewModelScope.launch {
-                preferences.saveTrainingState(trainingState)
-                runCatching { preferences.clearActiveSession() }
-            }
+            persistTrainingState(trainingState, clearActiveSession = true)
             return
         }
 
@@ -1113,9 +1113,20 @@ class LiveGameViewModel internal constructor(
             pausedForTutorial = false
         }
         persistUiState()
-        viewModelScope.launch {
-            preferences.setTutorialCompleted()
-            preferences.saveTrainingState(trainingState)
+        persistTrainingState(trainingState, setTutorialCompleted = true)
+    }
+
+    private fun persistTrainingState(
+        state: TrainingState,
+        clearActiveSession: Boolean = false,
+        setTutorialCompleted: Boolean = false,
+    ) {
+        val previousSave = trainingPersistenceJob
+        trainingPersistenceJob = viewModelScope.launch {
+            previousSave?.join()
+            if (setTutorialCompleted) preferences.setTutorialCompleted()
+            preferences.saveTrainingState(state)
+            if (clearActiveSession) preferences.clearActiveSession()
         }
     }
 
@@ -2113,9 +2124,11 @@ class LiveGameViewModel internal constructor(
             entries = replayLog.toList(),
         )
         checkpointJob?.cancel()
+        val pendingTrainingPersistence = trainingPersistenceJob
         lastCheckpointTick = snapshot.tick
         checkpointJob = viewModelScope.launch {
             try {
+                pendingTrainingPersistence?.join()
                 val payload = withContext(Dispatchers.Default) { restorable.toPayload() }
                 if (payload.length > MAX_SESSION_PAYLOAD_CHARS) {
                     disableSessionPersistence()
@@ -2151,7 +2164,11 @@ class LiveGameViewModel internal constructor(
         val recordKey = record?.toSessionKey()
         val persisted = !activeInMemory && !suppressPersistedSession &&
             recordKey == validatedSessionKey && validatedSessionAvailable
-        val missions = missionModels(resources, updated.progress)
+        val missions = missionModels(
+            resources,
+            updated.progress,
+            updated.trainingState.completedLessonIds,
+        )
         val selectedId = activeDescriptor?.selectionId?.takeIf {
             it == CUSTOM_SELECTION_ID || it == DAILY_SELECTION_ID
         }
@@ -3058,7 +3075,7 @@ class LiveGameViewModel internal constructor(
 
         private fun initialUiState(resources: Resources) = GameUiState(
             selectedMissionId = ContentRegistry.firstMissionIds.first(),
-            missions = missionModels(resources, PlayerProgress()),
+            missions = missionModels(resources, PlayerProgress(), emptySet()),
             career = careerModel(PlayerProgress()),
             fixes = checkNotNull(ContentRegistry.pack(ContentRegistry.DEFAULT_PACK_ID)).airport.fixes.map { fix ->
                 FixUiModel(
@@ -3071,6 +3088,7 @@ class LiveGameViewModel internal constructor(
         private fun missionModels(
             resources: Resources,
             progress: PlayerProgress,
+            completedLessonIds: Set<String>,
         ): List<MissionUiModel> {
             val authored = ContentRegistry.authoredMissions.map { mission ->
                 val airport = checkNotNull(ContentRegistry.airport(mission.airportId))
@@ -3095,6 +3113,8 @@ class LiveGameViewModel internal constructor(
                     locked = mission.id !in progress.unlockedMissionIds,
                     trainingAvailable = progress.tutorialCompleted ||
                         mission.id in progress.unlockedMissionIds,
+                    trainingCompleted = TrainingAcademy.lessonFor(mission.tutorialFocus)
+                        ?.id?.let(completedLessonIds::contains) == true,
                     pack = pack,
                 )
             }
@@ -3143,6 +3163,7 @@ class LiveGameViewModel internal constructor(
             completed: Boolean,
             locked: Boolean,
             trainingAvailable: Boolean,
+            trainingCompleted: Boolean = false,
             isEndless: Boolean = false,
             pack: com.stuart.atccontroller.data.ContentPack,
         ): MissionUiModel {
@@ -3203,6 +3224,7 @@ class LiveGameViewModel internal constructor(
                 isEndless = isEndless,
                 trainingAvailable = trainingAvailable && !isEndless &&
                     TrainingAcademy.lessonFor(tutorialFocus) != null,
+                trainingCompleted = trainingCompleted,
             )
         }
 

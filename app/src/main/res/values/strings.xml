@@ -79,6 +79,7 @@
     <string name="campaign_missions_summary">Learn one control skill at a time, or build a custom practice shift.</string>
     <string name="mission_path">Mission path</string>
     <string name="mission_status_completed">Completed</string>
+    <string name="mission_status_lesson_completed">Lesson complete</string>
     <string name="mission_status_lesson_available">Lesson available</string>
     <string name="mission_status_locked">Locked</string>
     <string name="mission_status_guided">Guided</string>
@@ -603,6 +604,7 @@
     <string name="weather_display_only">Conditions are advisory in this mission and do not affect the simulation.</string>
     <string name="training_action_gate">Use the focusable game control to complete this action. Valid actions advance automatically.</string>
     <string name="practice_lesson">Play guided lesson</string>
+    <string name="replay_lesson">Replay guided lesson</string>
     <string name="training_title_format">%1$s Academy</string>
     <string name="training_aircraft_fallback">the highlighted aircraft</string>
     <string name="training_prompt_select">Select %1$s using its radar target or flight strip.</string>

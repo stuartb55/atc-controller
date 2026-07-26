@@ -1055,6 +1055,7 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
     }
     val statusLabel = when {
         mission.completed -> stringResource(R.string.mission_status_completed)
+        mission.trainingCompleted -> stringResource(R.string.mission_status_lesson_completed)
         mission.locked && mission.trainingAvailable -> stringResource(R.string.mission_status_lesson_available)
         mission.locked -> stringResource(R.string.mission_status_locked)
         mission.trainingAvailable -> stringResource(R.string.mission_status_guided)
@@ -1113,7 +1114,7 @@ private fun MissionListItem(mission: MissionUiModel, selected: Boolean, onClick:
                         style = MaterialTheme.typography.labelSmall,
                         color = when {
                             mission.locked && !mission.trainingAvailable -> colors.muted
-                            mission.completed -> colors.green
+                            mission.completed || mission.trainingCompleted -> colors.green
                             else -> colors.amber
                         },
                         maxLines = 1,
@@ -1262,7 +1263,13 @@ private fun MissionBriefing(
                 Spacer(Modifier.height(14.dp))
                 if (onTraining != null) {
                     PrimaryActionButton(
-                        text = stringResource(R.string.practice_lesson),
+                        text = stringResource(
+                            if (mission.trainingCompleted) {
+                                R.string.replay_lesson
+                            } else {
+                                R.string.practice_lesson
+                            },
+                        ),
                         onClick = onTraining,
                         modifier = Modifier.fillMaxWidth(),
                     )

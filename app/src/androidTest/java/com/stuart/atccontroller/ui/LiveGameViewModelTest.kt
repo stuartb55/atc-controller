@@ -399,6 +399,46 @@ class LiveGameViewModelTest {
     }
 
     @Test
+    fun completedAcademyLessonIsPersistedAndPresentedAfterRecreation() {
+        val altitudeMission = ManchesterContent.missionIds[1]
+        val altitudeLesson = checkNotNull(
+            TrainingAcademy.lessonFor(
+                checkNotNull(ContentRegistry.mission(altitudeMission)).tutorialFocus,
+            ),
+        )
+        val persistence = FakeGamePersistence(
+            PlayerData(progress = PlayerProgress(tutorialCompleted = true)),
+        )
+        val first = createViewModel(SavedStateHandle(), persistence)
+        waitUntil { first.uiState.settingsLoaded }
+
+        instrumentation.runOnMainSync {
+            first.onAction(GameAction.StartTrainingLesson(altitudeMission))
+            first.onAction(GameAction.SelectAircraft("m02_a1"))
+            first.onAction(GameAction.SetTargetAltitude(5_000))
+        }
+
+        assertEquals(AppScreen.MISSIONS, first.uiState.screen)
+        waitUntil {
+            altitudeLesson.id in persistence.data.value.trainingState.completedLessonIds
+        }
+        waitUntil {
+            first.uiState.missions.first { it.id == altitudeMission }.trainingCompleted
+        }
+        assertEquals(0, persistence.recordedMissionResults)
+
+        val recreated = createViewModel(
+            SavedStateHandle(),
+            FakeGamePersistence(persistence.data.value),
+        )
+        waitUntil { recreated.uiState.settingsLoaded }
+
+        assertTrue(
+            recreated.uiState.missions.first { it.id == altitudeMission }.trainingCompleted,
+        )
+    }
+
+    @Test
     fun legacyFirstLessonSessionMigratesToApproachSetupAfterProcessDeath() {
         val missionId = ManchesterContent.FIRST_MISSION_ID
         val record = ActiveSessionRecord(
@@ -792,7 +832,12 @@ private class FakeGamePersistence(initial: PlayerData) : GamePersistence {
     }
 
     override suspend fun saveTrainingState(state: TrainingState) {
-        data.value = data.value.copy(trainingState = state)
+        data.value = data.value.copy(
+            trainingState = state.copy(
+                completedLessonIds = data.value.trainingState.completedLessonIds +
+                    state.completedLessonIds,
+            ),
+        )
     }
 
     override suspend fun saveCompletedReplay(replay: CompletedReplayRecord) {

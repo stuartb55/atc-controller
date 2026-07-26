@@ -14,9 +14,12 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.stuart.atccontroller.MainActivity
 import com.stuart.atccontroller.data.PlayerPreferencesRepository
 import com.stuart.atccontroller.data.PlayerSettings
+import com.stuart.atccontroller.data.TrainingState
 import com.stuart.atccontroller.data.atcControllerDataStore
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -45,8 +48,8 @@ class MainActivityTest {
 
     @After
     fun restoreDefaults() = runBlocking {
+        repository.resetProgress()
         repository.setSettings(PlayerSettings())
-        repository.clearActiveSession()
     }
 
     @Test
@@ -69,5 +72,22 @@ class MainActivityTest {
             composeRule.onNodeWithContentDescription("Unmute Music").assertIsDisplayed()
             composeRule.onNodeWithContentDescription("High contrast").assertIsOn()
         }
+    }
+
+    @Test
+    fun completedLessonsSurviveLaterTrainingCursorSaves() = runBlocking {
+        repository.resetProgress()
+        repository.saveTrainingState(
+            TrainingState(completedLessonIds = setOf("altitude")),
+        )
+        repository.saveTrainingState(
+            TrainingState(activeLessonId = "speed", activeStep = 1),
+        )
+
+        val stored = repository.playerData.first {
+            it.trainingState.activeLessonId == "speed"
+        }.trainingState
+
+        assertTrue("altitude" in stored.completedLessonIds)
     }
 }
