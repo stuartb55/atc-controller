@@ -6,7 +6,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.stuart.atccontroller.platform.GameFeedback
 import com.stuart.atccontroller.ui.AtcControllerApp
 import com.stuart.atccontroller.ui.AtcControllerTheme
@@ -14,7 +16,9 @@ import com.stuart.atccontroller.ui.LiveFeedbackKind
 import com.stuart.atccontroller.ui.LiveGameViewModel
 
 class MainActivity : ComponentActivity() {
-    private val gameViewModel: LiveGameViewModel by viewModels()
+    private val gameViewModel: LiveGameViewModel by viewModels {
+        (application as AtcApplication).container.gameViewModelFactory
+    }
     private lateinit var gameFeedback: GameFeedback
     private val delayedFocusLoss = Runnable {
         if (
@@ -32,25 +36,26 @@ class MainActivity : ComponentActivity() {
         gameViewModel.refreshLocalizedContent()
         enableEdgeToEdge()
         setContent {
-            val state = gameViewModel.uiState
-            val feedbackCue = gameViewModel.feedbackCue
+            val state by gameViewModel.uiStateFlow.collectAsStateWithLifecycle()
+            val settings by gameViewModel.settingsStateFlow.collectAsStateWithLifecycle()
+            val feedbackCue by gameViewModel.feedbackCueFlow.collectAsStateWithLifecycle()
 
-            LaunchedEffect(state.settingsLoaded, state.settings) {
-                if (state.settingsLoaded) gameFeedback.applySettings(state.settings)
+            LaunchedEffect(state.settingsLoaded, settings) {
+                if (state.settingsLoaded) gameFeedback.applySettings(settings)
             }
             LaunchedEffect(feedbackCue?.sequence, state.settingsLoaded) {
                 feedbackCue?.takeIf { state.settingsLoaded }?.let { cue ->
                     when (cue.kind) {
-                        LiveFeedbackKind.CONFIRMATION -> gameFeedback.clearance(state.settings)
-                        LiveFeedbackKind.SUCCESS -> gameFeedback.missionComplete(state.settings)
+                        LiveFeedbackKind.CONFIRMATION -> gameFeedback.clearance(settings)
+                        LiveFeedbackKind.SUCCESS -> gameFeedback.missionComplete(settings)
                         LiveFeedbackKind.WARNING,
-                        LiveFeedbackKind.FAILURE -> gameFeedback.warning(state.settings)
+                        LiveFeedbackKind.FAILURE -> gameFeedback.warning(settings)
                     }
                     gameViewModel.consumeFeedback(cue.sequence)
                 }
             }
 
-            AtcControllerTheme(highContrast = state.settings.highContrast) {
+            AtcControllerTheme(highContrast = settings.highContrast) {
                 AtcControllerApp(
                     state = state,
                     onAction = gameViewModel::onAction,

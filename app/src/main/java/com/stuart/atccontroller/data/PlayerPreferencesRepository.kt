@@ -2,6 +2,7 @@ package com.stuart.atccontroller.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -11,16 +12,22 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.time.LocalDate
 import java.util.Base64
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private const val DATA_STORE_NAME = "atc_player_data"
 
@@ -40,7 +47,6 @@ data class PlayerSettings(
     val highContrast: Boolean = false,
     val labelScale: Float = 1f,
     val labelDeclutteringEnabled: Boolean = true,
-    val routeSnappingEnabled: Boolean = true,
     val pauseOnFocusLoss: Boolean = true,
 )
 
@@ -134,8 +140,14 @@ data class CompletedReplayRecord(
     val terminalTick: Long,
     val finalScore: Int,
     val terminalHash: String,
-    val payload: String,
-)
+    /** Empty for a metadata-only summary; use loadCompletedReplayResult to read payload bytes. */
+    val payload: String = "",
+    val payloadFileId: String? = null,
+    val payloadByteCount: Int = payload.toByteArray(StandardCharsets.UTF_8).size,
+    val payloadSha256: String = "",
+) {
+    val isPayloadLoaded: Boolean get() = payload.isNotEmpty() || payloadFileId == null
+}
 
 data class PracticeResultRecord(
     val resultId: String,
@@ -194,25 +206,51 @@ data class PlayerData(
 
 class PlayerPreferencesRepository(
     private val dataStore: DataStore<Preferences>,
+    private val replayPayloadStore: ReplayPayloadStore? = null,
 ) {
-    val playerData: Flow<PlayerData> = dataStore.data
+    constructor(context: Context) : this(
+        dataStore = context.atcControllerDataStore,
+        replayPayloadStore = FileReplayPayloadStore(
+            File(context.filesDir, REPLAY_PAYLOAD_DIRECTORY),
+        ),
+    )
+
+    private val replayMutex = Mutex()
+
+    private val preferencesData: Flow<Preferences> = dataStore.data
         .catch { error ->
             if (error is IOException) emit(emptyPreferences()) else throw error
+        }
+
+    val playerData: Flow<PlayerData> = preferencesData
+        .onStart {
+            if (replayPayloadStore != null) {
+                try {
+                    prepareReplayStorage()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Keep settings/progression readable. A caller can retry prepareReplayStorage and
+                    // inspect its typed result; legacy metadata remains intact until migration commits.
+                }
+            }
         }
         .map(::decodePlayerData)
         .distinctUntilChanged()
         .flowOn(Dispatchers.Default)
 
-    val settings: Flow<PlayerSettings> = playerData
-        .map { data: PlayerData -> data.settings }
+    /** Settings never trigger replay migration or read replay payload bytes. */
+    val settings: Flow<PlayerSettings> = preferencesData
+        .map(::decodeSettings)
         .distinctUntilChanged()
 
-    val progress: Flow<PlayerProgress> = playerData
-        .map { data: PlayerData -> data.progress }
+    /** Progress never triggers replay migration or read replay payload bytes. */
+    val progress: Flow<PlayerProgress> = preferencesData
+        .map(::decodeProgress)
         .distinctUntilChanged()
 
-    val activeSession: Flow<ActiveSessionRecord?> = playerData
-        .map { data: PlayerData -> data.activeSession }
+    val activeSession: Flow<ActiveSessionRecord?> = preferencesData
+        .map { preferences -> SessionSnapshotCodec.decode(preferences[Keys.ACTIVE_SESSION]) }
         .distinctUntilChanged()
 
     suspend fun updateSettings(transform: (PlayerSettings) -> PlayerSettings) {
@@ -228,7 +266,6 @@ class PlayerPreferencesRepository(
             preferences[Keys.HIGH_CONTRAST] = updated.highContrast
             preferences[Keys.LABEL_SCALE] = updated.labelScale
             preferences[Keys.LABEL_DECLUTTERING] = updated.labelDeclutteringEnabled
-            preferences[Keys.ROUTE_SNAPPING] = updated.routeSnappingEnabled
             preferences[Keys.PAUSE_ON_FOCUS_LOSS] = updated.pauseOnFocusLoss
         }
     }
@@ -267,28 +304,15 @@ class PlayerPreferencesRepository(
     /** Atomically updates ranked progression and the idempotent controller service record. */
     suspend fun recordValidatedMissionResult(result: ValidatedMissionResult) {
         require(result.missionId in ContentRegistry.missionIds)
+        dataStore.edit { preferences -> preferences.applyValidatedMissionResult(result) }
+    }
+
+    /** Terminal transaction: progression becomes visible in the same commit that clears recovery. */
+    suspend fun commitValidatedMissionResult(result: ValidatedMissionResult) {
+        require(result.missionId in ContentRegistry.missionIds)
         dataStore.edit { preferences ->
-            val service = ControllerServiceRecordCodec.decode(preferences[Keys.SERVICE_RECORD])
-            if (result.resultId in service.processedResultIds) return@edit
-
-            val existingStars = MissionStarsCodec.decode(preferences[Keys.MISSION_STARS]).toMutableMap()
-            existingStars[result.missionId] = maxOf(existingStars[result.missionId] ?: 0, result.stars)
-            preferences[Keys.MISSION_STARS] = MissionStarsCodec.encode(existingStars)
-            val existingResults = MissionResultsCodec.decode(preferences[Keys.MISSION_RESULTS]).toMutableMap()
-            val previous = existingResults[result.missionId]
-            existingResults[result.missionId] = MissionResultRecord(
-                stars = maxOf(previous?.stars ?: 0, result.stars),
-                bestScore = maxOf(previous?.bestScore ?: 0, result.score),
-            )
-            preferences[Keys.MISSION_RESULTS] = MissionResultsCodec.encode(existingResults)
-            preferences[Keys.UNLOCKED_MISSIONS] = unlockedAfterMissionCompletion(
-                preferences[Keys.UNLOCKED_MISSIONS].orEmpty(),
-                result.missionId,
-            )
-
-            preferences[Keys.SERVICE_RECORD] = ControllerServiceRecordCodec.encode(
-                service.updatedWith(result),
-            )
+            preferences.applyValidatedMissionResult(result)
+            preferences.remove(Keys.ACTIVE_SESSION)
         }
     }
 
@@ -299,16 +323,16 @@ class PlayerPreferencesRepository(
     suspend fun recordEndlessHighScore(contentPackId: String, score: Int) {
         require(ContentRegistry.pack(contentPackId) != null) { "Unknown content pack" }
         require(score >= 0) { "Score must not be negative" }
+        dataStore.edit { preferences -> preferences.applyEndlessHighScore(contentPackId, score) }
+    }
+
+    /** Terminal transaction for a failed endless stage: payout and recovery cleanup are atomic. */
+    suspend fun commitEndlessTerminalResult(contentPackId: String, score: Int) {
+        require(ContentRegistry.pack(contentPackId) != null) { "Unknown content pack" }
+        require(score >= 0) { "Score must not be negative" }
         dataStore.edit { preferences ->
-            val scores = EndlessHighScoreCodec.decode(
-                preferences[Keys.ENDLESS_HIGH_SCORES],
-                preferences[Keys.ENDLESS_HIGH_SCORE] ?: 0,
-            ).toMutableMap()
-            scores[contentPackId] = maxOf(scores[contentPackId] ?: 0, score)
-            preferences[Keys.ENDLESS_HIGH_SCORES] = EndlessHighScoreCodec.encode(scores)
-            if (contentPackId == ContentRegistry.DEFAULT_PACK_ID) {
-                preferences[Keys.ENDLESS_HIGH_SCORE] = scores.getValue(contentPackId)
-            }
+            preferences.applyEndlessHighScore(contentPackId, score)
+            preferences.remove(Keys.ACTIVE_SESSION)
         }
     }
 
@@ -336,35 +360,190 @@ class PlayerPreferencesRepository(
     }
 
     suspend fun saveCompletedReplay(replay: CompletedReplayRecord) {
-        require(replay.schemaVersion > 0 && replay.id.isNotBlank() && replay.scenarioId.isNotBlank())
-        require(replay.savedAtEpochMillis >= 0 && replay.terminalTick >= 0 && replay.finalScore >= 0)
-        require(replay.payload.length <= MAX_COMPLETED_REPLAY_PAYLOAD)
-        dataStore.edit { preferences ->
-            val retained = CompletedReplayCodec.decode(preferences[Keys.COMPLETED_REPLAYS])
-                .filterNot { it.id == replay.id }
-            preferences[Keys.COMPLETED_REPLAYS] = CompletedReplayCodec.encode(
-                (listOf(replay) + retained).take(MAX_COMPLETED_REPLAYS),
-            )
+        ReplayPolicy.requireValid(replay)
+        val storage = replayPayloadStore
+        if (storage == null) {
+            // Source-compatible bridge for tests/legacy composition. Production must use the
+            // Context constructor so payloads are never written to Preferences DataStore.
+            dataStore.edit { preferences ->
+                val retained = CompletedReplayCodec.decode(preferences[Keys.COMPLETED_REPLAYS_LEGACY])
+                    .filterNot { it.id == replay.id }
+                preferences[Keys.COMPLETED_REPLAYS_LEGACY] = CompletedReplayCodec.encode(
+                    (listOf(replay) + retained).take(ReplayPolicy.MAX_REPLAY_COUNT),
+                )
+            }
+            return
+        }
+
+        prepareReplayStorage()
+        replayMutex.withLock {
+            val metadata = replayMetadataFor(replay)
+            val payloadBytes = replay.payload.toByteArray(StandardCharsets.UTF_8)
+            // File commit precedes the DataStore pointer swap. A failed edit can leave only an
+            // unreferenced complete file, which the next maintenance pass safely removes.
+            storage.writeAtomically(metadata.payloadFileId, payloadBytes)
+            dataStore.edit { preferences ->
+                val retained = CompletedReplayMetadataCodec
+                    .decode(preferences[Keys.COMPLETED_REPLAYS_METADATA])
+                    .filterNot { it.id == replay.id }
+                preferences[Keys.COMPLETED_REPLAYS_METADATA] = CompletedReplayMetadataCodec.encode(
+                    ReplayPolicy.retain(listOf(metadata) + retained),
+                )
+            }
+            runCleanupCatching { cleanupReplayFilesLocked(storage) }
         }
     }
 
     suspend fun deleteCompletedReplay(id: String) {
-        dataStore.edit { preferences ->
-            preferences[Keys.COMPLETED_REPLAYS] = CompletedReplayCodec.encode(
-                CompletedReplayCodec.decode(preferences[Keys.COMPLETED_REPLAYS]).filterNot { it.id == id },
+        require(id.isNotBlank()) { "Replay id must not be blank" }
+        val storage = replayPayloadStore
+        if (storage == null) {
+            dataStore.edit { preferences ->
+                preferences[Keys.COMPLETED_REPLAYS_LEGACY] = CompletedReplayCodec.encode(
+                    CompletedReplayCodec.decode(preferences[Keys.COMPLETED_REPLAYS_LEGACY])
+                        .filterNot { it.id == id },
+                )
+            }
+            return
+        }
+
+        prepareReplayStorage()
+        replayMutex.withLock {
+            var removedFileId: String? = null
+            dataStore.edit { preferences ->
+                val metadata = CompletedReplayMetadataCodec
+                    .decode(preferences[Keys.COMPLETED_REPLAYS_METADATA])
+                removedFileId = metadata.firstOrNull { it.id == id }?.payloadFileId
+                preferences[Keys.COMPLETED_REPLAYS_METADATA] = CompletedReplayMetadataCodec.encode(
+                    metadata.filterNot { it.id == id },
+                )
+            }
+            // Delete only after the metadata transaction commits; a failed delete is an orphan,
+            // never a dangling reference.
+            removedFileId?.let { runCleanupCatching { storage.delete(it) } }
+            runCleanupCatching { cleanupReplayFilesLocked(storage) }
+        }
+    }
+
+    /**
+     * Loads and verifies one replay payload. Corrupt/missing entries are quarantined lazily without
+     * deserializing any other replay.
+     */
+    suspend fun loadCompletedReplayResult(id: String): ReplayLoadResult {
+        require(id.isNotBlank()) { "Replay id must not be blank" }
+        val storage = replayPayloadStore
+            ?: return CompletedReplayCodec
+                .decode(dataStore.data.first()[Keys.COMPLETED_REPLAYS_LEGACY])
+                .firstOrNull { it.id == id }
+                ?.let(ReplayLoadResult::Loaded)
+                ?: ReplayLoadResult.NotFound
+
+        val preparation = prepareReplayStorage()
+        return replayMutex.withLock {
+            val metadata = CompletedReplayMetadataCodec
+                .decode(dataStore.data.first()[Keys.COMPLETED_REPLAYS_METADATA])
+                .firstOrNull { it.id == id }
+                ?: return@withLock preparation.failure?.let { failure ->
+                    ReplayLoadResult.StorageFailure(
+                        replayId = id,
+                        retryable = failure == ReplayStorageFailure.IO_RETRYABLE,
+                    )
+                } ?: ReplayLoadResult.NotFound
+            try {
+                val bytes = storage.read(metadata.payloadFileId)
+                    ?: return@withLock quarantineCorruptReplayLocked(
+                        metadata,
+                        storage,
+                        ReplayCorruptionReason.MISSING_FILE,
+                    )
+                if (bytes.size != metadata.payloadByteCount ||
+                    bytes.size > ReplayPolicy.MAX_ENCODED_BYTES
+                ) {
+                    return@withLock quarantineCorruptReplayLocked(
+                        metadata,
+                        storage,
+                        ReplayCorruptionReason.INVALID_SIZE,
+                    )
+                }
+                if (sha256(bytes) != metadata.payloadSha256) {
+                    return@withLock quarantineCorruptReplayLocked(
+                        metadata,
+                        storage,
+                        ReplayCorruptionReason.CHECKSUM_MISMATCH,
+                    )
+                }
+                val payload = decodeUtf8Strict(bytes)
+                    ?: return@withLock quarantineCorruptReplayLocked(
+                        metadata,
+                        storage,
+                        ReplayCorruptionReason.INVALID_UTF8,
+                    )
+                val replay = metadata.asSummary().copy(payload = payload)
+                if (ReplayPolicy.validate(replay) != null) {
+                    return@withLock quarantineCorruptReplayLocked(
+                        metadata,
+                        storage,
+                        ReplayCorruptionReason.POLICY_REJECTED,
+                    )
+                }
+                ReplayLoadResult.Loaded(replay)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (corrupt: ReplayPayloadCorruptException) {
+                quarantineCorruptReplayLocked(metadata, storage, corrupt.reason)
+            } catch (_: IOException) {
+                ReplayLoadResult.StorageFailure(id, retryable = true)
+            } catch (_: SecurityException) {
+                ReplayLoadResult.StorageFailure(id, retryable = false)
+            }
+        }
+    }
+
+    /** Source-compatible convenience for callers that do not need a corruption reason. */
+    suspend fun loadCompletedReplay(id: String): CompletedReplayRecord? =
+        (loadCompletedReplayResult(id) as? ReplayLoadResult.Loaded)?.replay
+
+    /**
+     * Migrates v1 inline payloads, removes metadata whose files vanished (including D2D transfer),
+     * and removes complete but unreferenced/orphan payload files.
+     */
+    suspend fun prepareReplayStorage(): ReplayMaintenanceResult {
+        val storage = replayPayloadStore
+            ?: return ReplayMaintenanceResult(
+                migrationPending = true,
+                failure = ReplayStorageFailure.STORAGE_NOT_CONFIGURED,
             )
+        return replayMutex.withLock {
+            try {
+                migrateAndMaintainReplaysLocked(storage)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                ReplayMaintenanceResult(
+                    migrationPending = true,
+                    failure = ReplayStorageFailure.IO_RETRYABLE,
+                )
+            } catch (_: SecurityException) {
+                ReplayMaintenanceResult(
+                    migrationPending = true,
+                    failure = ReplayStorageFailure.PERMISSION_PERMANENT,
+                )
+            }
         }
     }
 
     suspend fun savePracticeResult(result: PracticeResultRecord) {
         require(result.resultId.isNotBlank() && result.configurationIdentity.isNotBlank())
         require(result.score >= 0 && result.stars in 0..3 && result.completedAtEpochMillis >= 0)
+        dataStore.edit { preferences -> preferences.applyPracticeResult(result) }
+    }
+
+    suspend fun commitPracticeResult(result: PracticeResultRecord) {
+        require(result.resultId.isNotBlank() && result.configurationIdentity.isNotBlank())
+        require(result.score >= 0 && result.stars in 0..3 && result.completedAtEpochMillis >= 0)
         dataStore.edit { preferences ->
-            val retained = PracticeResultCodec.decode(preferences[Keys.PRACTICE_RESULTS])
-                .filterNot { it.resultId == result.resultId }
-            preferences[Keys.PRACTICE_RESULTS] = PracticeResultCodec.encode(
-                (listOf(result) + retained).take(20),
-            )
+            preferences.applyPracticeResult(result)
+            preferences.remove(Keys.ACTIVE_SESSION)
         }
     }
 
@@ -377,10 +556,21 @@ class PlayerPreferencesRepository(
         require(configurationIdentity == DailyShift.identityFor(localDate))
         require(resultId.isNotBlank() && score >= 0)
         dataStore.edit { preferences ->
-            val record = DailyServiceRecordCodec.decode(preferences[Keys.DAILY_RECORD])
-            preferences[Keys.DAILY_RECORD] = DailyServiceRecordCodec.encode(
-                record.updatedWith(localDate, configurationIdentity, resultId, score),
-            )
+            preferences.applyDailyResult(localDate, configurationIdentity, resultId, score)
+        }
+    }
+
+    suspend fun commitDailyResult(
+        localDate: LocalDate,
+        configurationIdentity: String,
+        resultId: String,
+        score: Int,
+    ) {
+        require(configurationIdentity == DailyShift.identityFor(localDate))
+        require(resultId.isNotBlank() && score >= 0)
+        dataStore.edit { preferences ->
+            preferences.applyDailyResult(localDate, configurationIdentity, resultId, score)
+            preferences.remove(Keys.ACTIVE_SESSION)
         }
     }
 
@@ -394,6 +584,16 @@ class PlayerPreferencesRepository(
 
     suspend fun clearEndlessMilestone() {
         dataStore.edit { it.remove(Keys.ENDLESS_MILESTONE) }
+    }
+
+    /** Idempotent max-score payout and milestone removal are one DataStore transaction. */
+    suspend fun commitEndlessPayout(contentPackId: String, score: Int) {
+        require(ContentRegistry.pack(contentPackId) != null) { "Unknown content pack" }
+        require(score >= 0) { "Score must not be negative" }
+        dataStore.edit { preferences ->
+            preferences.applyEndlessHighScore(contentPackId, score)
+            preferences.remove(Keys.ENDLESS_MILESTONE)
+        }
     }
 
     /** Repairs legacy saves whose completion records and explicit unlock set drifted apart. */
@@ -411,6 +611,8 @@ class PlayerPreferencesRepository(
 
     /** Clears progression and resumable play while preserving accessibility and audio settings. */
     suspend fun resetProgress() {
+        val storage = replayPayloadStore
+        if (storage != null) prepareReplayStorage()
         dataStore.edit { preferences ->
             preferences.remove(Keys.MISSION_STARS)
             preferences.remove(Keys.MISSION_RESULTS)
@@ -420,41 +622,212 @@ class PlayerPreferencesRepository(
             preferences.remove(Keys.ENDLESS_HIGH_SCORES)
             preferences.remove(Keys.ACTIVE_SESSION)
             preferences.remove(Keys.TRAINING_STATE)
-            preferences.remove(Keys.COMPLETED_REPLAYS)
+            preferences.remove(Keys.COMPLETED_REPLAYS_LEGACY)
+            preferences.remove(Keys.COMPLETED_REPLAYS_METADATA)
             preferences.remove(Keys.SERVICE_RECORD)
             preferences.remove(Keys.PRACTICE_RESULTS)
             preferences.remove(Keys.DAILY_RECORD)
             preferences.remove(Keys.ENDLESS_MILESTONE)
         }
+        if (storage != null) {
+            replayMutex.withLock {
+                runCleanupCatching { cleanupReplayFilesLocked(storage) }
+            }
+        }
+    }
+
+    private suspend fun migrateAndMaintainReplaysLocked(
+        storage: ReplayPayloadStore,
+    ): ReplayMaintenanceResult {
+        val before = dataStore.data.first()
+        val legacyEncoded = before[Keys.COMPLETED_REPLAYS_LEGACY]
+        val legacy = CompletedReplayCodec.decode(legacyEncoded)
+        val filesAtStart = storage.existingFileIds()
+        val existing = CompletedReplayMetadataCodec
+            .decode(before[Keys.COMPLETED_REPLAYS_METADATA])
+        val existingWithFiles = existing.filter { it.payloadFileId in filesAtStart }
+        val removedMissing = existing.size - existingWithFiles.size
+        val migrated = mutableListOf<CompletedReplayMetadata>()
+        var migrationPending = false
+
+        legacy.forEach { replay ->
+            if (existingWithFiles.any { it.id == replay.id }) return@forEach
+            if (ReplayPolicy.validate(replay) != null) return@forEach
+            val metadata = replayMetadataFor(replay)
+            try {
+                storage.writeAtomically(
+                    metadata.payloadFileId,
+                    replay.payload.toByteArray(StandardCharsets.UTF_8),
+                )
+                migrated += metadata
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: IOException) {
+                migrationPending = true
+            } catch (_: SecurityException) {
+                migrationPending = true
+            }
+        }
+
+        val retained = ReplayPolicy.retain(existingWithFiles + migrated)
+        dataStore.edit { preferences ->
+            // Another repository/process may have raced this migration. Retain the source and retry
+            // instead of committing metadata derived from a stale inline payload set.
+            if (preferences[Keys.COMPLETED_REPLAYS_LEGACY] != legacyEncoded) {
+                throw IOException("Legacy replay metadata changed during migration")
+            }
+            if (retained.isEmpty()) {
+                preferences.remove(Keys.COMPLETED_REPLAYS_METADATA)
+            } else {
+                preferences[Keys.COMPLETED_REPLAYS_METADATA] =
+                    CompletedReplayMetadataCodec.encode(retained)
+            }
+            if (!migrationPending) preferences.remove(Keys.COMPLETED_REPLAYS_LEGACY)
+        }
+        val removedOrphans = cleanupReplayFilesLocked(storage)
+        return ReplayMaintenanceResult(
+            migratedLegacyRecords = migrated.size,
+            removedMissingRecords = removedMissing,
+            removedOrphanFiles = removedOrphans,
+            migrationPending = migrationPending,
+            failure = if (migrationPending) ReplayStorageFailure.IO_RETRYABLE else null,
+        )
+    }
+
+    private suspend fun cleanupReplayFilesLocked(storage: ReplayPayloadStore): Int {
+        val referenced = CompletedReplayMetadataCodec
+            .decode(dataStore.data.first()[Keys.COMPLETED_REPLAYS_METADATA])
+            .mapTo(mutableSetOf(), CompletedReplayMetadata::payloadFileId)
+        var removed = 0
+        storage.existingFileIds().forEach { fileId ->
+            if (fileId !in referenced && storage.delete(fileId)) removed += 1
+        }
+        return removed
+    }
+
+    private suspend fun quarantineCorruptReplayLocked(
+        metadata: CompletedReplayMetadata,
+        storage: ReplayPayloadStore,
+        reason: ReplayCorruptionReason,
+    ): ReplayLoadResult.Corrupt {
+        dataStore.edit { preferences ->
+            val retained = CompletedReplayMetadataCodec
+                .decode(preferences[Keys.COMPLETED_REPLAYS_METADATA])
+                .filterNot { it.id == metadata.id }
+            if (retained.isEmpty()) {
+                preferences.remove(Keys.COMPLETED_REPLAYS_METADATA)
+            } else {
+                preferences[Keys.COMPLETED_REPLAYS_METADATA] =
+                    CompletedReplayMetadataCodec.encode(retained)
+            }
+        }
+        runCleanupCatching { storage.delete(metadata.payloadFileId) }
+        return ReplayLoadResult.Corrupt(metadata.id, reason)
+    }
+
+    private suspend fun runCleanupCatching(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Cleanup is idempotent and retried by prepareReplayStorage. Never turn a committed
+            // player result into an apparent failed save because orphan deletion was unavailable.
+        }
+    }
+
+    private fun MutablePreferences.applyValidatedMissionResult(result: ValidatedMissionResult) {
+        val service = ControllerServiceRecordCodec.decode(this[Keys.SERVICE_RECORD])
+        if (result.resultId in service.processedResultIds) return
+
+        val existingStars = MissionStarsCodec.decode(this[Keys.MISSION_STARS]).toMutableMap()
+        existingStars[result.missionId] = maxOf(existingStars[result.missionId] ?: 0, result.stars)
+        this[Keys.MISSION_STARS] = MissionStarsCodec.encode(existingStars)
+        val existingResults = MissionResultsCodec.decode(this[Keys.MISSION_RESULTS]).toMutableMap()
+        val previous = existingResults[result.missionId]
+        existingResults[result.missionId] = MissionResultRecord(
+            stars = maxOf(previous?.stars ?: 0, result.stars),
+            bestScore = maxOf(previous?.bestScore ?: 0, result.score),
+        )
+        this[Keys.MISSION_RESULTS] = MissionResultsCodec.encode(existingResults)
+        this[Keys.UNLOCKED_MISSIONS] = unlockedAfterMissionCompletion(
+            this[Keys.UNLOCKED_MISSIONS].orEmpty(),
+            result.missionId,
+        )
+        this[Keys.SERVICE_RECORD] = ControllerServiceRecordCodec.encode(
+            service.updatedWith(result),
+        )
+    }
+
+    private fun MutablePreferences.applyPracticeResult(result: PracticeResultRecord) {
+        val retained = PracticeResultCodec.decode(this[Keys.PRACTICE_RESULTS])
+            .filterNot { it.resultId == result.resultId }
+        this[Keys.PRACTICE_RESULTS] = PracticeResultCodec.encode(
+            (listOf(result) + retained).take(20),
+        )
+    }
+
+    private fun MutablePreferences.applyDailyResult(
+        localDate: LocalDate,
+        configurationIdentity: String,
+        resultId: String,
+        score: Int,
+    ) {
+        val record = DailyServiceRecordCodec.decode(this[Keys.DAILY_RECORD])
+        this[Keys.DAILY_RECORD] = DailyServiceRecordCodec.encode(
+            record.updatedWith(localDate, configurationIdentity, resultId, score),
+        )
+    }
+
+    private fun MutablePreferences.applyEndlessHighScore(contentPackId: String, score: Int) {
+        val scores = EndlessHighScoreCodec.decode(
+            this[Keys.ENDLESS_HIGH_SCORES],
+            this[Keys.ENDLESS_HIGH_SCORE] ?: 0,
+        ).toMutableMap()
+        scores[contentPackId] = maxOf(scores[contentPackId] ?: 0, score)
+        this[Keys.ENDLESS_HIGH_SCORES] = EndlessHighScoreCodec.encode(scores)
+        if (contentPackId == ContentRegistry.DEFAULT_PACK_ID) {
+            this[Keys.ENDLESS_HIGH_SCORE] = scores.getValue(contentPackId)
+        }
     }
 
     private fun decodePlayerData(preferences: Preferences): PlayerData {
-        val legacyStars = MissionStarsCodec.decode(preferences[Keys.MISSION_STARS])
-        val results = MissionResultsCodec.decode(preferences[Keys.MISSION_RESULTS])
-        val mergedResults = mergeMissionResults(legacyStars, results)
         return PlayerData(
             settings = decodeSettings(preferences),
-            progress = PlayerProgress(
-                missionStars = mergedResults.stars,
-                missionBestScores = mergedResults.bestScores,
-                unlockedMissionIds = reconciledMissionUnlocks(
-                    preferences[Keys.UNLOCKED_MISSIONS].orEmpty(),
-                    mergedResults.stars.keys,
-                ),
-                tutorialCompleted = preferences[Keys.TUTORIAL_COMPLETED] ?: false,
-                endlessHighScore = (preferences[Keys.ENDLESS_HIGH_SCORE] ?: 0).coerceAtLeast(0),
-                endlessHighScores = EndlessHighScoreCodec.decode(
-                    preferences[Keys.ENDLESS_HIGH_SCORES],
-                    preferences[Keys.ENDLESS_HIGH_SCORE] ?: 0,
-                ),
-            ),
+            progress = decodeProgress(preferences),
             activeSession = SessionSnapshotCodec.decode(preferences[Keys.ACTIVE_SESSION]),
             trainingState = TrainingStateCodec.decode(preferences[Keys.TRAINING_STATE]),
-            completedReplays = CompletedReplayCodec.decode(preferences[Keys.COMPLETED_REPLAYS]),
+            completedReplays = if (replayPayloadStore == null) {
+                CompletedReplayCodec.decode(preferences[Keys.COMPLETED_REPLAYS_LEGACY])
+            } else {
+                CompletedReplayMetadataCodec
+                    .decode(preferences[Keys.COMPLETED_REPLAYS_METADATA])
+                    .map(CompletedReplayMetadata::asSummary)
+            },
             serviceRecord = ControllerServiceRecordCodec.decode(preferences[Keys.SERVICE_RECORD]),
             practiceResults = PracticeResultCodec.decode(preferences[Keys.PRACTICE_RESULTS]),
             dailyRecord = DailyServiceRecordCodec.decode(preferences[Keys.DAILY_RECORD]),
             endlessMilestone = EndlessMilestoneCodec.decode(preferences[Keys.ENDLESS_MILESTONE]),
+        )
+    }
+
+    private fun decodeProgress(preferences: Preferences): PlayerProgress {
+        val legacyStars = MissionStarsCodec.decode(preferences[Keys.MISSION_STARS])
+        val results = MissionResultsCodec.decode(preferences[Keys.MISSION_RESULTS])
+        val mergedResults = mergeMissionResults(legacyStars, results)
+        return PlayerProgress(
+            missionStars = mergedResults.stars,
+            missionBestScores = mergedResults.bestScores,
+            unlockedMissionIds = reconciledMissionUnlocks(
+                preferences[Keys.UNLOCKED_MISSIONS].orEmpty(),
+                mergedResults.stars.keys,
+            ),
+            tutorialCompleted = preferences[Keys.TUTORIAL_COMPLETED] ?: false,
+            endlessHighScore = (preferences[Keys.ENDLESS_HIGH_SCORE] ?: 0).coerceAtLeast(0),
+            endlessHighScores = EndlessHighScoreCodec.decode(
+                preferences[Keys.ENDLESS_HIGH_SCORES],
+                preferences[Keys.ENDLESS_HIGH_SCORE] ?: 0,
+            ),
         )
     }
 
@@ -478,7 +851,6 @@ class PlayerPreferencesRepository(
                 highContrast = preferences[Keys.HIGH_CONTRAST] ?: false,
                 labelScale = preferences[Keys.LABEL_SCALE] ?: 1f,
                 labelDeclutteringEnabled = preferences[Keys.LABEL_DECLUTTERING] ?: true,
-                routeSnappingEnabled = preferences[Keys.ROUTE_SNAPPING] ?: true,
                 pauseOnFocusLoss = preferences[Keys.PAUSE_ON_FOCUS_LOSS] ?: true,
             ),
         )
@@ -510,7 +882,6 @@ class PlayerPreferencesRepository(
         val HIGH_CONTRAST = booleanPreferencesKey("high_contrast")
         val LABEL_SCALE = floatPreferencesKey("label_scale")
         val LABEL_DECLUTTERING = booleanPreferencesKey("label_decluttering")
-        val ROUTE_SNAPPING = booleanPreferencesKey("route_snapping")
         val PAUSE_ON_FOCUS_LOSS = booleanPreferencesKey("pause_on_focus_loss")
         val MISSION_STARS = stringPreferencesKey("mission_stars_v1")
         val MISSION_RESULTS = stringPreferencesKey("mission_results_v2")
@@ -520,7 +891,8 @@ class PlayerPreferencesRepository(
         val ENDLESS_HIGH_SCORES = stringPreferencesKey("endless_high_scores_v2")
         val ACTIVE_SESSION = stringPreferencesKey("active_session_v1")
         val TRAINING_STATE = stringPreferencesKey("training_state_v1")
-        val COMPLETED_REPLAYS = stringPreferencesKey("completed_replays_v1")
+        val COMPLETED_REPLAYS_LEGACY = stringPreferencesKey("completed_replays_v1")
+        val COMPLETED_REPLAYS_METADATA = stringPreferencesKey("completed_replays_v2")
         val SERVICE_RECORD = stringPreferencesKey("controller_service_record_v1")
         val PRACTICE_RESULTS = stringPreferencesKey("practice_results_v1")
         val DAILY_RECORD = stringPreferencesKey("daily_service_record_v1")
@@ -529,8 +901,7 @@ class PlayerPreferencesRepository(
 
     private companion object {
         const val MIN_AUDIBLE_VOLUME = 0.01f
-        const val MAX_COMPLETED_REPLAYS = 5
-        const val MAX_COMPLETED_REPLAY_PAYLOAD = 250_000
+        const val REPLAY_PAYLOAD_DIRECTORY = "completed_replays"
     }
 }
 
@@ -706,25 +1077,28 @@ internal object TrainingStateCodec {
 }
 
 internal object CompletedReplayCodec {
-    private const val MAX_RECORDS = 5
-    private const val MAX_PAYLOAD = 250_000
+    private const val MAX_ENCODED_LEGACY_CHARS =
+        ReplayPolicy.MAX_ENCODED_BYTES * ReplayPolicy.MAX_REPLAY_COUNT * 2
 
-    fun encode(records: List<CompletedReplayRecord>): String = records.take(MAX_RECORDS).joinToString("\n") { replay ->
-        listOf(
-            replay.schemaVersion.toString(),
-            TextCodec.encode(replay.id),
-            TextCodec.encode(replay.scenarioId),
-            replay.savedAtEpochMillis.toString(),
-            replay.terminalTick.toString(),
-            replay.finalScore.toString(),
-            TextCodec.encode(replay.terminalHash),
-            TextCodec.encode(replay.payload.take(MAX_PAYLOAD)),
-        ).joinToString(":")
-    }
+    /** Legacy v1 codec retained only for one-time migration and source-compatible tests. */
+    fun encode(records: List<CompletedReplayRecord>): String =
+        records.take(ReplayPolicy.MAX_REPLAY_COUNT).joinToString("\n") { replay ->
+            ReplayPolicy.requireValid(replay)
+            listOf(
+                replay.schemaVersion.toString(),
+                TextCodec.encode(replay.id),
+                TextCodec.encode(replay.scenarioId),
+                replay.savedAtEpochMillis.toString(),
+                replay.terminalTick.toString(),
+                replay.finalScore.toString(),
+                TextCodec.encode(replay.terminalHash),
+                TextCodec.encode(replay.payload),
+            ).joinToString(":")
+        }
 
     fun decode(encoded: String?): List<CompletedReplayRecord> {
-        if (encoded.isNullOrBlank() || encoded.length > MAX_PAYLOAD * MAX_RECORDS * 2) return emptyList()
-        return encoded.lineSequence().take(MAX_RECORDS).mapNotNull { line ->
+        if (encoded.isNullOrBlank() || encoded.length > MAX_ENCODED_LEGACY_CHARS) return emptyList()
+        return encoded.lineSequence().take(ReplayPolicy.MAX_REPLAY_COUNT).mapNotNull { line ->
             runCatching {
                 val parts = line.split(':', limit = 8)
                 require(parts.size == 8)
@@ -736,8 +1110,8 @@ internal object CompletedReplayCodec {
                     terminalTick = parts[4].toLong().also { require(it >= 0) },
                     finalScore = parts[5].toInt().also { require(it >= 0) },
                     terminalHash = checkNotNull(TextCodec.decode(parts[6])),
-                    payload = checkNotNull(TextCodec.decode(parts[7])).also { require(it.length <= MAX_PAYLOAD) },
-                )
+                    payload = checkNotNull(TextCodec.decode(parts[7])),
+                ).also { require(ReplayPolicy.validate(it) == null) }
             }.getOrNull()
         }.toList()
     }
@@ -853,7 +1227,8 @@ internal object DailyServiceRecordCodec {
                         val date = runCatching { LocalDate.parse(parts[1]) }.getOrNull()
                             ?: return@forEach
                         val identity = TextCodec.decode(parts[2])
-                            ?.takeIf { it == DailyShift.identityFor(date) } ?: return@forEach
+                            ?.let { storedIdentity -> canonicalDailyIdentity(date, storedIdentity) }
+                            ?: return@forEach
                         val score = parts[3].toIntOrNull()?.takeIf { it >= 0 } ?: return@forEach
                         val firstId = TextCodec.decode(parts[4])?.takeIf(String::isNotBlank)
                             ?: return@forEach
@@ -881,6 +1256,15 @@ internal object DailyServiceRecordCodec {
             require(storedCurrent == normalized.currentStreak && storedBest == normalized.bestStreak)
             normalized.copy(processedResultIds = processed)
         }.getOrDefault(DailyServiceRecord())
+    }
+
+    private fun canonicalDailyIdentity(date: LocalDate, storedIdentity: String): String? {
+        val canonicalIdentity = DailyShift.identityFor(date)
+        if (storedIdentity == canonicalIdentity) return canonicalIdentity
+        val legacyParts = storedIdentity.split('|', limit = 2)
+        if (legacyParts.size != 2 || legacyParts[0] != date.toString()) return null
+        val storedConfiguration = ShiftConfigurationCodec.decode(legacyParts[1]) ?: return null
+        return canonicalIdentity.takeIf { storedConfiguration == DailyShift.configurationFor(date) }
     }
 }
 
@@ -1070,7 +1454,7 @@ internal object ControllerServiceRecordCodec {
     private fun Int?.orEmpty(): String = this?.toString().orEmpty()
 }
 
-private object TextCodec {
+internal object TextCodec {
     private val encoder = Base64.getUrlEncoder().withoutPadding()
     private val decoder = Base64.getUrlDecoder()
 

@@ -19,4 +19,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "Manchester Approach"
 include(":app")
+include(":benchmark")
 

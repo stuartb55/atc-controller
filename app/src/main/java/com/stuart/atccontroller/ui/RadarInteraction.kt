@@ -2,13 +2,6 @@ package com.stuart.atccontroller.ui
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import kotlin.math.hypot
-
-/** Semantic end point retained with a drawn route after a magnetic snap. */
-sealed interface RouteTerminalTarget {
-    data class AssignedRunway(val runwayId: String) : RouteTerminalTarget
-    data class NavigationFix(val name: String) : RouteTerminalTarget
-}
 
 internal data class RadarHitRegion(
     val aircraftId: String,
@@ -70,30 +63,3 @@ internal fun updateRadarViewport(
     )
 }
 
-internal fun routeTerminalIsAllowed(
-    target: RouteTerminalTarget,
-    assignedRunwayId: String?,
-    isArrival: Boolean,
-): Boolean = when (target) {
-    is RouteTerminalTarget.AssignedRunway -> isArrival && target.runwayId == assignedRunwayId
-    is RouteTerminalTarget.NavigationFix -> true
-}
-
-/** Joins a freehand vector to the validated final without granting a landing clearance. */
-internal fun composeApproachRoute(
-    drawnPoints: List<NormalizedPoint>,
-    finalApproachPoints: List<NormalizedPoint>,
-): List<NormalizedPoint> {
-    if (finalApproachPoints.isEmpty()) return drawnPoints
-    val intercept = finalApproachPoints.first()
-    val prefix = drawnPoints
-        .dropLastWhile { point ->
-            hypot(
-                (point.x - intercept.x).toDouble(),
-                (point.y - intercept.y).toDouble(),
-            ) < .025
-        }
-    return (prefix + finalApproachPoints).fold(emptyList()) { result, point ->
-        if (result.lastOrNull() == point) result else result + point
-    }
-}

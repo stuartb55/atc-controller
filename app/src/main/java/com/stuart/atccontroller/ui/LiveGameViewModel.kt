@@ -2,9 +2,6 @@ package com.stuart.atccontroller.ui
 
 import android.app.Application
 import android.content.res.Resources
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -16,6 +13,7 @@ import com.stuart.atccontroller.data.ControllerServiceRecord
 import com.stuart.atccontroller.data.ContentRegistry
 import com.stuart.atccontroller.data.CustomShiftGenerator
 import com.stuart.atccontroller.data.DailyShift
+import com.stuart.atccontroller.data.DurableWriteState
 import com.stuart.atccontroller.data.EndlessScenarioGenerator
 import com.stuart.atccontroller.data.EndlessMilestoneChoice
 import com.stuart.atccontroller.data.EndlessMilestoneRecord
@@ -25,7 +23,16 @@ import com.stuart.atccontroller.data.PlayerData
 import com.stuart.atccontroller.data.PlayerPreferencesRepository
 import com.stuart.atccontroller.data.PlayerProgress
 import com.stuart.atccontroller.data.PlayerSettings
+import com.stuart.atccontroller.data.PersistenceCoordinator
+import com.stuart.atccontroller.data.PersistenceOperation
+import com.stuart.atccontroller.data.PersistenceOperationId
+import com.stuart.atccontroller.data.PersistenceOperationKind
+import com.stuart.atccontroller.data.PersistenceOperationResult
+import com.stuart.atccontroller.data.PersistenceOperationStatus
+import com.stuart.atccontroller.data.PersistenceRetryPolicy
 import com.stuart.atccontroller.data.PracticeResultRecord
+import com.stuart.atccontroller.data.ReplayLoadResult
+import com.stuart.atccontroller.data.ReplayPolicy
 import com.stuart.atccontroller.data.RunwayDirection
 import com.stuart.atccontroller.data.ScenarioDefinition as ContentScenarioDefinition
 import com.stuart.atccontroller.data.ShiftConfiguration
@@ -39,7 +46,6 @@ import com.stuart.atccontroller.data.TrafficDensity
 import com.stuart.atccontroller.data.ValidatedMissionResult
 import com.stuart.atccontroller.data.WeatherPreset
 import com.stuart.atccontroller.data.TutorialFocus
-import com.stuart.atccontroller.data.atcControllerDataStore
 import com.stuart.atccontroller.data.toSimulationScenario
 import com.stuart.atccontroller.simulation.AircraftState
 import com.stuart.atccontroller.simulation.AircraftStatus
@@ -61,10 +67,15 @@ import com.stuart.atccontroller.simulation.GameSnapshot
 import com.stuart.atccontroller.simulation.GameStatus
 import com.stuart.atccontroller.simulation.HandoffStatus
 import com.stuart.atccontroller.simulation.HoldTurnDirection
-import com.stuart.atccontroller.simulation.Navigation
 import com.stuart.atccontroller.simulation.PlayerCommand
 import com.stuart.atccontroller.simulation.Route
+import com.stuart.atccontroller.simulation.SimulationFrame
 import com.stuart.atccontroller.simulation.Vec2
+import com.stuart.atccontroller.ui.session.EngineMutation
+import com.stuart.atccontroller.ui.session.OwnedSimulation
+import com.stuart.atccontroller.ui.session.SerializedSimulationOwner
+import com.stuart.atccontroller.ui.session.SimulationClockPolicy
+import com.stuart.atccontroller.ui.session.SimulationTransition
 import java.text.NumberFormat
 import java.time.LocalDate
 import java.security.MessageDigest
@@ -74,17 +85,26 @@ import kotlin.math.ceil
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sin
-import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** A one-shot cue consumed by [com.stuart.atccontroller.MainActivity]. */
@@ -104,25 +124,51 @@ internal interface GamePersistence {
     suspend fun recordMissionResult(missionId: String, stars: Int, score: Int)
     suspend fun recordValidatedMissionResult(result: ValidatedMissionResult) =
         recordMissionResult(result.missionId, result.stars, result.score)
+    suspend fun commitValidatedMissionResult(result: ValidatedMissionResult) {
+        recordValidatedMissionResult(result)
+        clearActiveSession()
+    }
     suspend fun recordEndlessHighScore(contentPackId: String, score: Int)
+    suspend fun commitEndlessTerminalResult(contentPackId: String, score: Int) {
+        recordEndlessHighScore(contentPackId, score)
+        clearActiveSession()
+    }
     suspend fun saveActiveSession(session: ActiveSessionRecord)
     suspend fun clearActiveSession()
     suspend fun saveTrainingState(state: TrainingState) = Unit
     suspend fun saveCompletedReplay(replay: CompletedReplayRecord) = Unit
+    suspend fun loadCompletedReplayResult(id: String): ReplayLoadResult = ReplayLoadResult.NotFound
     suspend fun deleteCompletedReplay(id: String) = Unit
     suspend fun savePracticeResult(result: PracticeResultRecord) = Unit
+    suspend fun commitPracticeResult(result: PracticeResultRecord) {
+        savePracticeResult(result)
+        clearActiveSession()
+    }
     suspend fun recordDailyResult(
         localDate: LocalDate,
         configurationIdentity: String,
         resultId: String,
         score: Int,
     ) = Unit
+    suspend fun commitDailyResult(
+        localDate: LocalDate,
+        configurationIdentity: String,
+        resultId: String,
+        score: Int,
+    ) {
+        recordDailyResult(localDate, configurationIdentity, resultId, score)
+        clearActiveSession()
+    }
     suspend fun saveEndlessMilestone(milestone: EndlessMilestoneRecord) = Unit
     suspend fun clearEndlessMilestone() = Unit
+    suspend fun commitEndlessPayout(contentPackId: String, score: Int) {
+        recordEndlessHighScore(contentPackId, score)
+        clearEndlessMilestone()
+    }
     suspend fun reconcileUnlocks() = Unit
 }
 
-private class PreferencesGamePersistence(
+internal class PreferencesGamePersistence(
     private val repository: PlayerPreferencesRepository,
 ) : GamePersistence {
     override val playerData = repository.playerData
@@ -138,8 +184,14 @@ private class PreferencesGamePersistence(
     override suspend fun recordValidatedMissionResult(result: ValidatedMissionResult) =
         repository.recordValidatedMissionResult(result)
 
+    override suspend fun commitValidatedMissionResult(result: ValidatedMissionResult) =
+        repository.commitValidatedMissionResult(result)
+
     override suspend fun recordEndlessHighScore(contentPackId: String, score: Int) =
         repository.recordEndlessHighScore(contentPackId, score)
+
+    override suspend fun commitEndlessTerminalResult(contentPackId: String, score: Int) =
+        repository.commitEndlessTerminalResult(contentPackId, score)
 
     override suspend fun saveActiveSession(session: ActiveSessionRecord) =
         repository.saveActiveSession(session)
@@ -149,10 +201,16 @@ private class PreferencesGamePersistence(
     override suspend fun saveCompletedReplay(replay: CompletedReplayRecord) =
         repository.saveCompletedReplay(replay)
 
+    override suspend fun loadCompletedReplayResult(id: String): ReplayLoadResult =
+        repository.loadCompletedReplayResult(id)
+
     override suspend fun deleteCompletedReplay(id: String) = repository.deleteCompletedReplay(id)
 
     override suspend fun savePracticeResult(result: PracticeResultRecord) =
         repository.savePracticeResult(result)
+
+    override suspend fun commitPracticeResult(result: PracticeResultRecord) =
+        repository.commitPracticeResult(result)
 
     override suspend fun recordDailyResult(
         localDate: LocalDate,
@@ -161,16 +219,27 @@ private class PreferencesGamePersistence(
         score: Int,
     ) = repository.recordDailyResult(localDate, configurationIdentity, resultId, score)
 
+    override suspend fun commitDailyResult(
+        localDate: LocalDate,
+        configurationIdentity: String,
+        resultId: String,
+        score: Int,
+    ) = repository.commitDailyResult(localDate, configurationIdentity, resultId, score)
+
     override suspend fun saveEndlessMilestone(milestone: EndlessMilestoneRecord) =
         repository.saveEndlessMilestone(milestone)
 
     override suspend fun clearEndlessMilestone() = repository.clearEndlessMilestone()
+    override suspend fun commitEndlessPayout(contentPackId: String, score: Int) =
+        repository.commitEndlessPayout(contentPackId, score)
+
     override suspend fun reconcileUnlocks() = repository.reconcileUnlocks()
 }
 
 /**
  * Production presentation adapter for the authored content, deterministic simulation, and Compose
- * UI contract. The engine is advanced from a single main-thread coroutine at its native 10 Hz.
+ * UI contract. A FIFO background actor owns and advances the engine at its native 10 Hz; only
+ * completed presentation frames are applied on the main thread.
  *
  * The engine has no mutable snapshot import API. For process-death recovery we therefore persist a
  * bounded log of typed player commands with their simulation ticks, then deterministically replay
@@ -181,8 +250,18 @@ class LiveGameViewModel internal constructor(
     application: Application,
     private val savedStateHandle: SavedStateHandle,
     private val preferences: GamePersistence,
+    private val persistenceCoordinator: PersistenceCoordinator = PersistenceCoordinator(),
+    private val clock: GameClock = SystemGameClock,
+    private val computationDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    simulationDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : AndroidViewModel(application) {
     private val resources = application.resources
+    private val simulationOwner = SerializedSimulationOwner(viewModelScope, simulationDispatcher)
+    private val commandReadbackPresenter = CommandReadbackPresenter(
+        strings = AndroidStringResolver(resources),
+        fixName = { position -> fixNamesByPosition[position] },
+    )
+    private val weatherPresenter = WeatherPresenter(AndroidStringResolver(resources))
     private val fixNamesByPosition: Map<Vec2, String>
         get() = activeAirport().fixes.associate { fix ->
             Vec2(fix.position.x, fix.position.y) to fix.displayName
@@ -193,7 +272,7 @@ class LiveGameViewModel internal constructor(
         application = application,
         savedStateHandle = savedStateHandle,
         preferences = PreferencesGamePersistence(
-            PlayerPreferencesRepository(application.atcControllerDataStore),
+            PlayerPreferencesRepository(application),
         ),
     )
 
@@ -207,7 +286,15 @@ class LiveGameViewModel internal constructor(
         restoredResult?.successful == true
 
     private var playerData = PlayerData()
+    /**
+     * Read-only compatibility mirror used by existing instrumentation. Production engine work is
+     * serialized through [simulationOwner].
+     */
     private var engine: AtcSimulationEngine? = null
+    private var engineSessionId: Long? = null
+    private var engineRequestGeneration = 0L
+    private var lastAppliedEngineOperation = 0L
+    private var simulationClockJob: Job? = null
     private var activeDescriptor: SessionDescriptor? = null
     private var activeContent: ContentScenarioDefinition? = null
     private var activeAttemptId: String? = null
@@ -215,6 +302,7 @@ class LiveGameViewModel internal constructor(
     private var suppressPersistedSession = false
     private var pausedForTutorial = false
     private var pausedForAbandonConfirmation = false
+    private var pauseWhenEngineReady = false
     private var lastCheckpointTick = -1L
     private var checkpointingDisabled = false
     private var restoreJob: Job? = null
@@ -230,12 +318,15 @@ class LiveGameViewModel internal constructor(
     private val trails = mutableMapOf<String, MutableList<NormalizedPoint>>()
     private val replayLog = mutableListOf<ReplayEntry>()
     private var replayController: ReplayController? = null
+    private val replayOperationMutex = Mutex()
     private var trainingRejectionMessage: String? = null
-    private var suppressTrainingObservation = false
     private var customConfiguration = ShiftConfiguration()
     private var resumeMilestoneActionOnLoad = true
+    private var commandReadbackSequence = 0L
+    private var persistenceRevision = 0L
+    private val pendingPersistenceWrites = mutableMapOf<String, PendingPersistenceWrite>()
 
-    var uiState by mutableStateOf(
+    private val mutableUiState = MutableStateFlow(
         initialUiState(resources).copy(
             screen = when {
                 restoredScreen == AppScreen.RESULTS && restoredResult == null -> AppScreen.HOME
@@ -252,30 +343,145 @@ class LiveGameViewModel internal constructor(
             isRestoring = restorePersistedSessionOnLoad,
         ),
     )
-        private set
+    val uiStateFlow: StateFlow<GameUiState> = mutableUiState.asStateFlow()
+    val radarStateFlow: StateFlow<RadarUiSlice> = uiStateFlow
+        .map(GameUiState::toRadarSlice)
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mutableUiState.value.toRadarSlice())
+    val commandStateFlow: StateFlow<CommandUiSlice> = uiStateFlow
+        .map(GameUiState::toCommandSlice)
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mutableUiState.value.toCommandSlice())
+    val objectiveStateFlow: StateFlow<ObjectiveUiSlice> = uiStateFlow
+        .map(GameUiState::toObjectiveSlice)
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mutableUiState.value.toObjectiveSlice())
+    val eventFeedStateFlow: StateFlow<List<EventFeedEntryUiModel>> = uiStateFlow
+        .map { state -> state.eventFeed }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mutableUiState.value.eventFeed)
+    val settingsStateFlow: StateFlow<SettingsUiState> = uiStateFlow
+        .map { state -> state.settings }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, mutableUiState.value.settings)
+    var uiState: GameUiState
+        get() = mutableUiState.value
+        private set(value) {
+            mutableUiState.value = value
+        }
 
-    var feedbackCue by mutableStateOf<LiveFeedbackCue?>(null)
-        private set
+    private val mutableFeedbackCue = MutableStateFlow<LiveFeedbackCue?>(null)
+    val feedbackCueFlow: StateFlow<LiveFeedbackCue?> = mutableFeedbackCue.asStateFlow()
+    var feedbackCue: LiveFeedbackCue?
+        get() = mutableFeedbackCue.value
+        private set(value) {
+            mutableFeedbackCue.value = value
+        }
 
     init {
-        viewModelScope.launch { preferences.reconcileUnlocks() }
+        viewModelScope.launch {
+            persistenceCoordinator.statuses.collectLatest(::applyPersistenceStatuses)
+        }
+        enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.OTHER,
+                stableKey = "startup-reconcile-unlocks",
+                retryPolicy = PersistenceRetryPolicy.BOUNDED_BACKGROUND_RETRY,
+                write = preferences::reconcileUnlocks,
+            ),
+        )
         viewModelScope.launch {
             preferences.playerData.collectLatest(::applyPlayerData)
         }
-        viewModelScope.launch {
-            while (isActive) {
-                delay(TICK_MILLIS.milliseconds)
-                if (replayController != null) {
-                    if (uiState.replay?.isPlaying == true) {
-                        advanceReplay(uiState.replay?.speed ?: 1)
+    }
+
+    private fun syncSimulationClock() {
+        if (!clockShouldRun()) {
+            simulationClockJob?.cancel()
+            simulationClockJob = null
+            return
+        }
+        if (simulationClockJob?.isActive == true) return
+
+        simulationClockJob = viewModelScope.launch {
+            val thisClock = currentCoroutineContext()[Job]
+            try {
+                while (isActive && clockShouldRun()) {
+                    delay(TICK_MILLIS)
+                    if (!clockShouldRun()) break
+                    if (replayController != null) {
+                        advanceReplayNow(uiState.replay?.speed ?: 1)
+                    } else {
+                        advanceLiveClockNow()
                     }
-                    continue
                 }
-                val runningEngine = engine ?: continue
-                if (uiState.screen != AppScreen.GAME) continue
-                if (runningEngine.snapshot.status == GameStatus.RUNNING) {
-                    publish(runningEngine.advance(TICK_SECONDS))
-                }
+            } finally {
+                if (simulationClockJob === thisClock) simulationClockJob = null
+            }
+        }
+    }
+
+    private fun clockShouldRun(): Boolean {
+        return SimulationClockPolicy.shouldRun(
+            hasOwnedSession = engineSessionId != null,
+            isGameScreenVisible = uiState.screen == AppScreen.GAME,
+            liveStatus = lastSnapshot?.status,
+            hasReplay = replayController != null,
+            replayIsPlaying = uiState.replay?.isPlaying == true,
+        )
+    }
+
+    private suspend fun advanceLiveClockNow() {
+        val sessionId = engineSessionId ?: return
+        val transition = simulationOwner.advance(sessionId, TICK_SECONDS) ?: return
+        applyTransition(transition)
+    }
+
+    private fun applyTransition(transition: SimulationTransition): Boolean {
+        if (transition.sessionId != engineSessionId ||
+            transition.operationSequence <= lastAppliedEngineOperation
+        ) {
+            return false
+        }
+        lastAppliedEngineOperation = transition.operationSequence
+        publishFrame(transition.frame)
+        return true
+    }
+
+    private fun acceptOwnedSimulation(
+        owned: OwnedSimulation,
+        requestGeneration: Long,
+    ): Boolean {
+        if (requestGeneration != engineRequestGeneration) return false
+        engine = owned.engine
+        engineSessionId = owned.sessionId
+        lastAppliedEngineOperation = owned.operationSequence
+        publishFrame(owned.frame)
+        val shouldPauseAfterInstall = pauseWhenEngineReady && replayController == null &&
+            owned.frame.snapshot.status == GameStatus.RUNNING
+        pauseWhenEngineReady = false
+        if (shouldPauseAfterInstall) {
+            submit(PlayerCommand.Pause, observeTraining = false)
+        }
+        return true
+    }
+
+    private fun invalidateEngine(): Long {
+        engineRequestGeneration += 1L
+        engineSessionId = null
+        engine = null
+        simulationClockJob?.cancel()
+        simulationClockJob = null
+        return engineRequestGeneration
+    }
+
+    private fun clearEngine() {
+        val requestGeneration = invalidateEngine()
+        pauseWhenEngineReady = false
+        viewModelScope.launch {
+            simulationOwner.clear()
+            if (requestGeneration == engineRequestGeneration) {
+                lastAppliedEngineOperation = 0L
             }
         }
     }
@@ -317,9 +523,6 @@ class LiveGameViewModel internal constructor(
             is GameAction.SetCustomStrikeLimit -> updateCustomConfiguration {
                 it.copy(strikeLimit = action.limit.coerceIn(1, 5))
             }
-            GameAction.ToggleCustomRouteSnapping -> updateCustomConfiguration {
-                it.copy(assists = it.assists.copy(routeSnapping = !it.assists.routeSnapping))
-            }
             GameAction.ToggleCustomApproachSetup -> updateCustomConfiguration {
                 it.copy(assists = it.assists.copy(approachSetup = !it.assists.approachSetup))
             }
@@ -354,7 +557,7 @@ class LiveGameViewModel internal constructor(
                 }
             }
             GameAction.StartDailyShift -> {
-                val date = LocalDate.now()
+                val date = clock.today()
                 startScenario(SessionDescriptor.Daily(date, DailyShift.configurationFor(date)))
             }
             GameAction.ContinueEndlessRun -> continueEndlessRun()
@@ -368,7 +571,6 @@ class LiveGameViewModel internal constructor(
                     )
                 }
             }
-            is GameAction.CommitRoute -> submitRoute(action.points, action.terminalTarget)
             is GameAction.DirectToFix -> routeToFix(action.name, append = false)
             is GameAction.AppendFix -> routeToFix(action.name, append = true)
             GameAction.UndoWaypoint -> submitForSelected { PlayerCommand.UndoWaypoint(it.id) }
@@ -466,6 +668,7 @@ class LiveGameViewModel internal constructor(
             GameAction.ConfirmAbandonment -> confirmAbandonment()
             GameAction.CancelAbandonment -> cancelAbandonment()
             GameAction.RetryProgressionPersistence -> persistPendingProgression()
+            is GameAction.RetryPersistence -> retryPersistence(action.operationId)
             GameAction.OpenNextMission -> openNextMission()
             GameAction.RestartMission -> activeDescriptor?.let(::startScenario)
             is GameAction.SetMusicVolume -> updateSettings { settings ->
@@ -503,9 +706,6 @@ class LiveGameViewModel internal constructor(
             GameAction.ToggleLabelDecluttering -> updateSettings {
                 it.copy(labelDeclutteringEnabled = !it.labelDeclutteringEnabled)
             }
-            GameAction.ToggleRouteSnapping -> updateSettings {
-                it.copy(routeSnappingEnabled = !it.routeSnappingEnabled)
-            }
             GameAction.TogglePauseOnFocusLoss -> updateSettings {
                 it.copy(pauseOnFocusLoss = !it.pauseOnFocusLoss)
             }
@@ -515,13 +715,19 @@ class LiveGameViewModel internal constructor(
             is GameAction.CycleConflict -> cycleConflict(action.offset)
             is GameAction.StartReplay -> startReplay(action.replayId)
             is GameAction.DeleteReplay -> deleteReplay(action.replayId)
-            GameAction.ReplayTogglePlay -> uiState = uiState.copy(
-                replay = uiState.replay?.copy(isPlaying = uiState.replay?.isPlaying != true),
-            )
+            GameAction.ReplayTogglePlay -> {
+                uiState = uiState.copy(
+                    replay = uiState.replay?.copy(isPlaying = uiState.replay?.isPlaying != true),
+                )
+                syncSimulationClock()
+            }
             GameAction.ReplayStep -> advanceReplay(1)
-            is GameAction.ReplaySetSpeed -> uiState = uiState.copy(
-                replay = uiState.replay?.copy(speed = action.multiplier.coerceIn(1, 4)),
-            )
+            is GameAction.ReplaySetSpeed -> {
+                uiState = uiState.copy(
+                    replay = uiState.replay?.copy(speed = action.multiplier.coerceIn(1, 4)),
+                )
+                syncSimulationClock()
+            }
             is GameAction.ReplaySeek -> seekReplay(action.tick)
             is GameAction.ReplayFollowAircraft -> {
                 selectAircraft(action.aircraftId)
@@ -572,9 +778,10 @@ class LiveGameViewModel internal constructor(
             result
         }
         val localizedAircraft = snapshot?.let { live ->
+            val conflictByAircraftId = live.conflicts.indexByAircraftId()
             live.aircraft
                 .filter(AircraftState::isUiVisible)
-                .map { it.toUiModel(live) }
+                .map { it.toUiModel(conflictByAircraftId[it.id]) }
         }
         val callsigns = snapshot?.aircraft?.associate { it.id to it.callsign }.orEmpty()
         uiState = uiState.copy(
@@ -586,7 +793,10 @@ class LiveGameViewModel internal constructor(
             career = careerModel(playerData.progress),
             serviceRecord = serviceRecordUi(playerData.serviceRecord, playerData.progress),
             aircraft = localizedAircraft ?: uiState.aircraft,
-            eventFeed = snapshot?.toEventFeed(callsigns) ?: uiState.eventFeed,
+            eventFeed = snapshot
+                ?.takeIf { it.eventHistory.isNotEmpty() }
+                ?.toEventFeed(callsigns)
+                ?: uiState.eventFeed,
             training = if (snapshot != null) trainingUi(snapshot) else uiState.training,
             result = localizedResult,
         )
@@ -596,7 +806,7 @@ class LiveGameViewModel internal constructor(
     private fun navigate(screen: AppScreen) {
         if (replayController != null && screen != AppScreen.GAME) {
             replayController = null
-            engine = null
+            clearEngine()
             lastSnapshot = null
             activeDescriptor = null
             activeContent = null
@@ -612,6 +822,7 @@ class LiveGameViewModel internal constructor(
             pauseAndCheckpoint(forcePause = true)
         }
         uiState = uiState.copy(screen = screen, isRestoring = false)
+        syncSimulationClock()
         persistUiState()
     }
 
@@ -649,7 +860,7 @@ class LiveGameViewModel internal constructor(
     }
 
     private fun customShiftUiWithDaily(configuration: ShiftConfiguration): CustomShiftUiModel {
-        val date = LocalDate.now()
+        val date = clock.today()
         val entry = playerData.dailyRecord.entries[date.toString()]
         return customShiftUi(configuration).copy(
             shareCode = ShiftConfigurationCodec.encode(configuration),
@@ -665,15 +876,13 @@ class LiveGameViewModel internal constructor(
     private fun continueLastGame() {
         if (uiState.isRestoring) return
         val snapshot = lastSnapshot
-        val runningEngine = engine
-        if (runningEngine != null && snapshot != null && snapshot.status.isActive()) {
-            val resumed = if (snapshot.status == GameStatus.PAUSED && !pausedForTutorial) {
-                runningEngine.submit(PlayerCommand.Resume)
-            } else {
-                snapshot
-            }
+        if (engineSessionId != null && snapshot != null && snapshot.status.isActive()) {
             uiState = uiState.copy(screen = AppScreen.GAME, result = null)
-            publish(resumed)
+            if (snapshot.status == GameStatus.PAUSED && !pausedForTutorial) {
+                submit(PlayerCommand.Resume)
+            } else {
+                syncSimulationClock()
+            }
             persistUiState()
             return
         }
@@ -708,11 +917,11 @@ class LiveGameViewModel internal constructor(
         restoreJob = null
         checkpointJob = null
         val content = descriptor.content()
-        val newEngine = AtcSimulationEngine(content.toSimulationScenario())
+        val requestGeneration = invalidateEngine()
+        pauseWhenEngineReady = false
         activeDescriptor = descriptor
         activeContent = content
         activeAttemptId = UUID.randomUUID().toString()
-        engine = newEngine
         trails.clear()
         replayLog.clear()
         lastConflictAnnouncementKey = null
@@ -740,12 +949,22 @@ class LiveGameViewModel internal constructor(
             progressionSaveStatus = ProgressionSaveStatus.NOT_REQUIRED,
             nextMissionId = null,
             abandonConfirmationVisible = false,
+            eventFeed = emptyList(),
+            fixes = fixesFor(),
         )
-        var firstSnapshot = newEngine.submit(PlayerCommand.Start)
-        if (showTutorial) firstSnapshot = newEngine.submit(PlayerCommand.Pause)
-        publish(firstSnapshot)
         persistUiState()
-        checkpoint()
+        viewModelScope.launch {
+            val owned = simulationOwner.create(
+                initialCommands = buildList {
+                    add(PlayerCommand.Start)
+                    if (showTutorial) add(PlayerCommand.Pause)
+                },
+            ) {
+                AtcSimulationEngine(content.toSimulationScenario())
+            }
+            if (!acceptOwnedSimulation(owned, requestGeneration)) return@launch
+            checkpoint()
+        }
     }
 
     private fun restoreScenario(record: ActiveSessionRecord) {
@@ -754,6 +973,8 @@ class LiveGameViewModel internal constructor(
         checkpointJob?.cancel()
         sessionValidationJob?.cancel()
         checkpointJob = null
+        val requestGeneration = invalidateEngine()
+        pauseWhenEngineReady = false
         uiState = uiState.copy(
             screen = AppScreen.GAME,
             selectedAircraftId = null,
@@ -767,7 +988,7 @@ class LiveGameViewModel internal constructor(
             restoredTutorialState == NO_TUTORIAL_STEP
         restoreJob = viewModelScope.launch {
             val reconstructed = try {
-                withContext(Dispatchers.Default) {
+                withContext(computationDispatcher) {
                     val saved = restorableFromRecord(record) ?: return@withContext null
                     ReconstructedSession(
                         saved = saved,
@@ -781,8 +1002,12 @@ class LiveGameViewModel internal constructor(
             }
 
             if (reconstructed == null) {
+                if (requestGeneration != engineRequestGeneration) {
+                    restoreJob = null
+                    return@launch
+                }
+                simulationOwner.clear()
                 suppressPersistedSession = true
-                engine = null
                 activeDescriptor = null
                 activeContent = null
                 activeAttemptId = null
@@ -796,25 +1021,28 @@ class LiveGameViewModel internal constructor(
                     sessionPersistenceFailed = true,
                 )
                 persistUiState()
-                try {
-                    preferences.clearActiveSession()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // The in-memory record stays suppressed even if clearing corrupt data fails.
-                }
+                enqueuePersistence(
+                    persistenceOperation(
+                        kind = PersistenceOperationKind.ACTIVE_SESSION,
+                        stableKey = "discard-corrupt:${record.scenarioId}:${record.savedAtEpochMillis}",
+                        write = preferences::clearActiveSession,
+                    ),
+                )
                 restoreJob = null
                 return@launch
             }
 
             val saved = reconstructed.saved
             val restored = reconstructed.restored
+            if (requestGeneration != engineRequestGeneration) {
+                restoreJob = null
+                return@launch
+            }
             validatedSessionKey = record.toSessionKey()
             validatedSessionAvailable = true
             activeDescriptor = saved.descriptor
             activeContent = restored.content
             activeAttemptId = saved.attemptId ?: "legacy-${record.savedAtEpochMillis}"
-            engine = restored.engine
             trails.clear()
             replayLog.clear()
             replayLog += saved.entries
@@ -848,8 +1076,14 @@ class LiveGameViewModel internal constructor(
                 canContinue = true,
                 isRestoring = false,
                 sessionPersistenceFailed = false,
+                eventFeed = emptyList(),
+                fixes = fixesFor(),
             )
-            publish(restored.snapshot)
+            val owned = simulationOwner.adopt(restored.engine, restored.snapshot)
+            if (!acceptOwnedSimulation(owned, requestGeneration)) {
+                restoreJob = null
+                return@launch
+            }
             persistUiState()
             restoreJob = null
         }
@@ -863,32 +1097,36 @@ class LiveGameViewModel internal constructor(
         val simulationScenario = content.toSimulationScenario()
         val maximumTick = ActiveSessionRestorePolicy.maximumRestorableTick(simulationScenario)
         require(saved.savedTick in 0..maximumTick) { "Saved tick is outside the scenario" }
-        require(saved.entries.size <= MAX_REPLAY_ENTRIES) { "Replay log is too large" }
+        require(saved.entries.size <= ReplayPolicy.MAX_COMMAND_COUNT) { "Replay log is too large" }
 
         val restoredEngine = AtcSimulationEngine(simulationScenario)
-        var snapshot = restoredEngine.submit(PlayerCommand.Start)
+        var snapshot = restoredEngine.submitForPresentation(PlayerCommand.Start).snapshot
         var replayTick = snapshot.tick
         for (entry in saved.entries) {
             currentCoroutineContext().ensureActive()
             require(entry.tick in replayTick..saved.savedTick) { "Replay ticks are not ordered" }
             snapshot = advanceForRestore(restoredEngine, snapshot, entry.tick - replayTick)
             require(snapshot.status == GameStatus.RUNNING) { "Replay reached a terminal state early" }
-            snapshot = restoredEngine.submit(entry.command)
+            snapshot = restoredEngine.submitForPresentation(entry.command).snapshot
             replayTick = snapshot.tick
         }
         snapshot = advanceForRestore(restoredEngine, snapshot, saved.savedTick - replayTick)
         require(ActiveSessionRestorePolicy.canRestore(snapshot, saved.savedTick, simulationScenario)) {
             "Saved simulation point cannot be reconstructed"
         }
-        snapshot = restoredEngine.submit(PlayerCommand.SetSimulationSpeed(saved.speedMultiplier))
-        if (saved.wasPaused) snapshot = restoredEngine.submit(PlayerCommand.Pause)
+        snapshot = restoredEngine.submitForPresentation(
+            PlayerCommand.SetSimulationSpeed(saved.speedMultiplier),
+        ).snapshot
+        if (saved.wasPaused) {
+            snapshot = restoredEngine.submitForPresentation(PlayerCommand.Pause).snapshot
+        }
         val needsTutorial = saved.descriptor is SessionDescriptor.Training ||
             (saved.descriptor.selectionId in ContentRegistry.firstMissionIds &&
                 !tutorialCompleted)
         if (needsTutorial && snapshot.status == GameStatus.RUNNING) {
-            snapshot = restoredEngine.submit(PlayerCommand.Pause)
+            snapshot = restoredEngine.submitForPresentation(PlayerCommand.Pause).snapshot
         }
-        return RestoredEngine(content, restoredEngine, snapshot, needsTutorial)
+        return RestoredEngine(content, restoredEngine, restoredEngine.snapshot, needsTutorial)
     }
 
     private suspend fun advanceForRestore(
@@ -902,7 +1140,7 @@ class LiveGameViewModel internal constructor(
         while (remaining > 0) {
             currentCoroutineContext().ensureActive()
             val stepCount = minOf(remaining, RESTORE_STEP_CHUNK)
-            snapshot = restoredEngine.advanceFixedSteps(stepCount)
+            snapshot = restoredEngine.advanceFixedStepsForPresentation(stepCount).snapshot
             remaining -= stepCount
         }
         return snapshot
@@ -923,52 +1161,6 @@ class LiveGameViewModel internal constructor(
                 advanceTutorial()
             }
         }
-    }
-
-    private fun submitRoute(points: List<NormalizedPoint>, terminalTarget: RouteTerminalTarget?) {
-        val id = uiState.selectedAircraftId ?: return
-        val aircraft = lastSnapshot?.aircraft?.firstOrNull { it.id == id } ?: return
-        val routedPoints = when (terminalTarget) {
-            is RouteTerminalTarget.AssignedRunway -> {
-                if (!routeTerminalIsAllowed(
-                        terminalTarget,
-                        aircraft.runwayId,
-                        aircraft.operation == FlightOperation.ARRIVAL,
-                )) {
-                    return
-                }
-                val airport = activeAirport()
-                val routeStart = points.lastOrNull()?.let { last ->
-                    val position = Vec2(last.x.toDouble(), last.y.toDouble())
-                    val heading = points.getOrNull(points.lastIndex - 1)?.let { previous ->
-                        Navigation.bearingDegrees(
-                            Vec2(previous.x.toDouble(), previous.y.toDouble()),
-                            position,
-                            airport.mapWidthNm,
-                            airport.mapHeightNm,
-                        )
-                    } ?: aircraft.headingDegrees
-                    aircraft.copy(position = position, headingDegrees = heading)
-                } ?: aircraft
-                val final = ApproachRoutePlanner.plan(routeStart, airport, terminalTarget.runwayId)
-                    .route.waypoints.map {
-                        NormalizedPoint(it.x.toFloat(), it.y.toFloat())
-                    }
-                composeApproachRoute(points, final)
-            }
-            is RouteTerminalTarget.NavigationFix -> {
-                val fix = uiState.fixes.firstOrNull { it.name == terminalTarget.name } ?: return
-                points.dropLastWhile { it == fix.position } + fix.position
-            }
-            null -> points
-        }
-        val waypoints = routedPoints.asSequence()
-            .filter { it.x.isFinite() && it.y.isFinite() }
-            .map(NormalizedPoint::clamped)
-            .map { Vec2(it.x.toDouble(), it.y.toDouble()) }
-            .take(MAX_ROUTE_POINTS)
-            .toList()
-        submit(PlayerCommand.SetRoute(id, Route(waypoints)))
     }
 
     private fun routeToFix(name: String, append: Boolean) {
@@ -1000,21 +1192,22 @@ class LiveGameViewModel internal constructor(
         val approachRoute = ApproachRoutePlanner.plan(aircraft, activeAirport(), runwayId).route
         val expectedAction = currentTrainingStep()?.action
         trainingRejectionMessage = null
-        suppressTrainingObservation = true
-        try {
-            submit(
+        submitCommandGroup(
+            commands = listOf(
                 PlayerCommand.SetRoute(
                     aircraft.id,
                     approachRoute,
                 ),
-            )
-            submit(PlayerCommand.SetTargetAltitude(aircraft.id, 0.0))
-            submit(PlayerCommand.SetTargetSpeed(aircraft.id, aircraft.type.maxLandingSpeedKnots))
-        } finally {
-            suppressTrainingObservation = false
-        }
-        if (expectedAction == TrainingAction.PREPARE_APPROACH && trainingRejectionMessage == null) {
-            observeTrainingAction(TrainingAction.PREPARE_APPROACH, aircraft.id)
+                PlayerCommand.SetTargetAltitude(aircraft.id, 0.0),
+                PlayerCommand.SetTargetSpeed(aircraft.id, aircraft.type.maxLandingSpeedKnots),
+            ),
+            observeTraining = false,
+        ) {
+            if (expectedAction == TrainingAction.PREPARE_APPROACH &&
+                trainingRejectionMessage == null
+            ) {
+                observeTrainingAction(TrainingAction.PREPARE_APPROACH, aircraft.id)
+            }
         }
     }
 
@@ -1086,7 +1279,7 @@ class LiveGameViewModel internal constructor(
             suppressPersistedSession = true
             checkpointingDisabled = true
             checkpointJob?.cancel()
-            engine = null
+            clearEngine()
             lastSnapshot = null
             activeDescriptor = null
             activeContent = null
@@ -1108,7 +1301,7 @@ class LiveGameViewModel internal constructor(
         uiState = uiState.copy(tutorialStep = null, training = null)
         if (pausedForTutorial && lastSnapshot?.status == GameStatus.PAUSED) {
             pausedForTutorial = false
-            engine?.submit(PlayerCommand.Resume)?.let(::publish)
+            submit(PlayerCommand.Resume)
         } else {
             pausedForTutorial = false
         }
@@ -1121,28 +1314,34 @@ class LiveGameViewModel internal constructor(
         clearActiveSession: Boolean = false,
         setTutorialCompleted: Boolean = false,
     ) {
-        val previousSave = trainingPersistenceJob
-        trainingPersistenceJob = viewModelScope.launch {
-            previousSave?.join()
-            if (setTutorialCompleted) preferences.setTutorialCompleted()
-            preferences.saveTrainingState(state)
-            if (clearActiveSession) preferences.clearActiveSession()
-        }
+        trainingPersistenceJob = enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.TRAINING,
+                stableKey = "training:${++persistenceRevision}:$state:" +
+                    "$clearActiveSession:$setTutorialCompleted",
+                retryPolicy = PersistenceRetryPolicy.BOUNDED_BACKGROUND_RETRY,
+                write = {
+                    if (setTutorialCompleted) preferences.setTutorialCompleted()
+                    preferences.saveTrainingState(state)
+                    if (clearActiveSession) preferences.clearActiveSession()
+                },
+            ),
+        )
     }
 
     private fun requestAbandonment() {
         if (lastSnapshot?.status?.isActive() != true) return
         pausedForAbandonConfirmation = lastSnapshot?.status == GameStatus.RUNNING
         if (pausedForAbandonConfirmation) {
-            engine?.submit(PlayerCommand.Pause)?.let(::publish)
+            submit(PlayerCommand.Pause)
         }
         uiState = uiState.copy(abandonConfirmationVisible = true)
     }
 
     private fun cancelAbandonment() {
         uiState = uiState.copy(abandonConfirmationVisible = false)
-        if (pausedForAbandonConfirmation && lastSnapshot?.status == GameStatus.PAUSED) {
-            engine?.submit(PlayerCommand.Resume)?.let(::publish)
+        if (pausedForAbandonConfirmation) {
+            submit(PlayerCommand.Resume)
         }
         pausedForAbandonConfirmation = false
     }
@@ -1156,12 +1355,14 @@ class LiveGameViewModel internal constructor(
         }
         pausedForAbandonConfirmation = false
         val snapshot = lastSnapshot ?: return
-        val paused = if (snapshot.status == GameStatus.RUNNING) {
-            engine?.submit(PlayerCommand.Pause) ?: snapshot
+        if (snapshot.status == GameStatus.RUNNING) {
+            submit(PlayerCommand.Pause, observeTraining = false, afterPublish = ::finishAbandonment)
         } else {
-            snapshot
+            finishAbandonment(snapshot)
         }
-        publish(paused)
+    }
+
+    private fun finishAbandonment(paused: GameSnapshot) {
         uiState = uiState.copy(
             screen = AppScreen.RESULTS,
             result = paused.toResult(
@@ -1195,26 +1396,87 @@ class LiveGameViewModel internal constructor(
         suppressPersistedSession = true
         checkpointingDisabled = true
         checkpointJob?.cancel()
-        engine = null
+        clearEngine()
         lastSnapshot = null
         replayLog.clear()
-        checkpointJob = viewModelScope.launch {
-            runCatching { preferences.clearActiveSession() }
+        checkpointJob = enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.ACTIVE_SESSION,
+                stableKey = "abandon:${activeAttemptId ?: uiState.selectedMissionId}",
+                write = preferences::clearActiveSession,
+            ),
+        )
+    }
+
+    private fun submit(
+        command: PlayerCommand,
+        observeTraining: Boolean = true,
+        afterPublish: (GameSnapshot) -> Unit = {},
+    ) {
+        val sessionId = engineSessionId ?: return
+        val readback = beginCommandReadback(command)
+        viewModelScope.launch {
+            val transition = simulationOwner.submit(sessionId, command) ?: return@launch
+            if (!handleSubmittedTransition(transition, command, observeTraining)) return@launch
+            settleCommandReadback(readback, transition.frame.snapshot)
+            afterPublish(transition.frame.snapshot)
         }
     }
 
-    private fun submit(command: PlayerCommand) {
-        val currentEngine = engine ?: return
-        val before = currentEngine.snapshot
-        if (command.isReplayable() && before.status.isActive()) {
-            if (replayLog.size < MAX_REPLAY_ENTRIES) {
-                replayLog += ReplayEntry(before.tick, command)
+    private fun beginCommandReadback(command: PlayerCommand): CommandReadbackUiModel? {
+        val aircraftId = command.aircraftIdOrNull() ?: return null
+        val callsign = lastSnapshot?.aircraft
+            ?.firstOrNull { aircraft -> aircraft.id == aircraftId }
+            ?.callsign ?: aircraftId
+        val readback = commandReadbackPresenter.submitted(
+            sequence = ++commandReadbackSequence,
+            aircraftId = aircraftId,
+            callsign = callsign,
+            command = command,
+        )
+        uiState = uiState.copy(commandReadback = readback)
+        return readback
+    }
+
+    private fun settleCommandReadback(
+        submitted: CommandReadbackUiModel?,
+        snapshot: GameSnapshot,
+    ) {
+        if (submitted == null || uiState.commandReadback?.sequence != submitted.sequence) return
+        val rejection = snapshot.events
+            .filterIsInstance<GameEvent.CommandRejected>()
+            .lastOrNull()
+        uiState = uiState.copy(
+            commandReadback = if (rejection == null) {
+                commandReadbackPresenter.accepted(submitted)
+            } else {
+                commandReadbackPresenter.rejected(
+                    submitted,
+                    eventCaption(rejection, mapOf(submitted.aircraftId to submitted.callsign), resources),
+                )
+            },
+        )
+    }
+
+    private fun handleSubmittedTransition(
+        transition: SimulationTransition,
+        command: PlayerCommand,
+        observeTraining: Boolean,
+    ): Boolean {
+        if (transition.sessionId != engineSessionId ||
+            transition.operationSequence <= lastAppliedEngineOperation
+        ) {
+            return false
+        }
+        if (command.isReplayable() && transition.before.status.isActive()) {
+            if (replayLog.size < ReplayPolicy.MAX_COMMAND_COUNT) {
+                replayLog += ReplayEntry(transition.before.tick, command)
             } else {
                 disableSessionPersistence()
             }
         }
-        val result = currentEngine.submit(command)
-        publish(result)
+        if (!applyTransition(transition)) return false
+        val result = transition.frame.snapshot
         val rejection = result.events.filterIsInstance<GameEvent.CommandRejected>().lastOrNull()
         if (rejection != null && uiState.tutorialStep != null) {
             val callsigns = result.aircraft.associate { it.id to it.callsign }
@@ -1225,11 +1487,34 @@ class LiveGameViewModel internal constructor(
                 fixNamesByPosition,
             )
             uiState = uiState.copy(training = trainingUi(result))
-        } else if (!suppressTrainingObservation) {
+        } else if (observeTraining) {
             trainingRejectionMessage = null
             observeTrainingCommand(command, result)
         }
         if (command.isReplayable()) checkpoint()
+        return true
+    }
+
+    private fun submitCommandGroup(
+        commands: List<PlayerCommand>,
+        observeTraining: Boolean,
+        afterAll: () -> Unit,
+    ) {
+        if (commands.isEmpty()) {
+            afterAll()
+            return
+        }
+        val sessionId = engineSessionId ?: return
+        viewModelScope.launch {
+            val transitions = simulationOwner.submitAll(sessionId, commands)
+            if (transitions.size != commands.size) return@launch
+            for ((transition, command) in transitions.zip(commands)) {
+                val readback = beginCommandReadback(command)
+                if (!handleSubmittedTransition(transition, command, observeTraining)) return@launch
+                settleCommandReadback(readback, transition.frame.snapshot)
+            }
+            afterAll()
+        }
     }
 
     private fun observeTrainingCommand(command: PlayerCommand, snapshot: GameSnapshot) {
@@ -1320,14 +1605,32 @@ class LiveGameViewModel internal constructor(
         )
     }
 
-    private fun publish(snapshot: GameSnapshot) {
+    private fun publishFrame(frame: SimulationFrame) {
+        publish(frame.snapshot, frame.eventSequenceStart)
+    }
+
+    private fun publish(
+        snapshot: GameSnapshot,
+        eventSequenceStart: Long?,
+    ) {
         val wasTerminal = lastSnapshot?.status?.isTerminal() == true
         lastSnapshot = snapshot
         recordTrails(snapshot)
 
-        val aircraft = snapshot.aircraft.filter(AircraftState::isUiVisible).map { it.toUiModel(snapshot) }
+        val stateByAircraftId = snapshot.aircraft.associateBy(AircraftState::id)
+        val conflictByAircraftId = snapshot.conflicts.indexByAircraftId()
+        val wakeByFollowerId = buildMap {
+            snapshot.wakeSpacing.forEach { spacing ->
+                putIfAbsent(spacing.followerAircraftId, spacing)
+            }
+        }
+        val visibleStates = snapshot.aircraft.filter(AircraftState::isUiVisible)
+        val aircraft = visibleStates.map { state ->
+            state.toUiModel(conflictByAircraftId[state.id])
+        }
+        val aircraftUiById = aircraft.associateBy(AircraftUiModel::id)
         val runways = snapshot.toRunwayUiModels()
-        val callsigns = snapshot.aircraft.associate { it.id to it.callsign }
+        val callsigns = stateByAircraftId.mapValues { (_, state) -> state.callsign }
         val shiftConfiguration = when (val descriptor = activeDescriptor) {
             is SessionDescriptor.Custom -> descriptor.configuration
             is SessionDescriptor.Daily -> descriptor.configuration
@@ -1357,9 +1660,10 @@ class LiveGameViewModel internal constructor(
         )
         val movementsRemaining = (movementTarget - snapshot.score.safeArrivals - snapshot.score.safeDepartures)
             .coerceAtLeast(0)
-        val eventFeed = snapshot.toEventFeed(callsigns)
-        val flightStrips = aircraft.map { item ->
-            val state = snapshot.aircraft.first { it.id == item.id }
+        val eventFeed = eventFeedFor(snapshot, callsigns, eventSequenceStart)
+        val flightStrips = visibleStates.map { state ->
+            val item = aircraftUiById.getValue(state.id)
+            val wakeSpacing = wakeByFollowerId[item.id]
             FlightStripUiModel(
                 aircraftId = item.id,
                 callsign = item.callsign,
@@ -1368,10 +1672,8 @@ class LiveGameViewModel internal constructor(
                 fuelPercent = item.fuelPercent,
                 conflictLevel = item.conflictLevel,
                 clearance = item.clearance,
-                wakeRequiredSeconds = snapshot.wakeSpacing
-                    .firstOrNull { it.followerAircraftId == item.id }?.requiredSeconds?.roundToInt(),
-                wakeActualSeconds = snapshot.wakeSpacing
-                    .firstOrNull { it.followerAircraftId == item.id }?.actualSeconds?.roundToInt(),
+                wakeRequiredSeconds = wakeSpacing?.requiredSeconds?.roundToInt(),
+                wakeActualSeconds = wakeSpacing?.actualSeconds?.roundToInt(),
                 runwayStatePriority = when (state.status) {
                     AircraftStatus.APPROACH, AircraftStatus.LANDING,
                     AircraftStatus.LINED_UP, AircraftStatus.TAKEOFF_ROLL -> 2
@@ -1390,7 +1692,7 @@ class LiveGameViewModel internal constructor(
             selectedAircraftId = selected,
             runway = runways.firstOrNull(RunwayUiModel::isActive) ?: RunwayUiModel(),
             runways = runways,
-            fixes = fixesFor(snapshot),
+            fixes = uiState.fixes,
             conflicts = conflicts,
             activeConflictIndex = activeConflictIndex,
             conflictAnnouncement = when {
@@ -1454,7 +1756,6 @@ class LiveGameViewModel internal constructor(
                     if (assists.conflictPrediction) add(resources.getString(R.string.assist_conflict_prediction))
                 }
             }.orEmpty(),
-            routeSnappingAssistEnabled = shiftConfiguration?.assists?.routeSnapping != false,
             approachSetupAssistEnabled = shiftConfiguration?.assists?.approachSetup != false,
             conflictPredictionAssistEnabled = shiftConfiguration?.assists?.conflictPrediction != false,
             dynamicEvents = snapshot.dynamicEventStates
@@ -1472,6 +1773,7 @@ class LiveGameViewModel internal constructor(
         if (snapshot.status.isActive() && snapshot.tick - lastCheckpointTick >= CHECKPOINT_TICKS) {
             checkpoint()
         }
+        syncSimulationClock()
     }
 
     private fun com.stuart.atccontroller.simulation.DynamicEventState.toUiModel(
@@ -1499,7 +1801,7 @@ class LiveGameViewModel internal constructor(
             title = typeLabel,
             lifecycle = resources.getString(
                 R.string.dynamic_lifecycle,
-                lifecycle.name.lowercase().replace('_', ' '),
+                resources.getString(lifecycle.labelResource()),
             ),
             recoveryGoal = goal,
             affectedLabel = affected,
@@ -1561,13 +1863,8 @@ class LiveGameViewModel internal constructor(
             runway.id to abs(weather.windSpeedKnots * sin(angle)).roundToInt()
         }
         return WeatherImpactUiModel(
-            wind = String.format(
-                Locale.UK,
-                "%03.0f° / %02.0f kt",
-                weather.windDirectionDegrees,
-                weather.windSpeedKnots,
-            ),
-            visibility = String.format(Locale.UK, "%.0f km", weather.visibilityKm),
+            wind = weatherPresenter.wind(weather),
+            visibility = weatherPresenter.visibility(weather),
             crosswindByRunway = crosswind,
             windDriftActive = mechanicVersions.windDrift > 0,
             reducedVisibilityActive = mechanicVersions.reducedVisibility > 0 && weather.visibilityKm < 8.0,
@@ -1596,6 +1893,36 @@ class LiveGameViewModel internal constructor(
                 rejectionCode = (event as? GameEvent.CommandRejected)?.reasonCode?.name,
             )
         }
+
+    private fun eventFeedFor(
+        snapshot: GameSnapshot,
+        callsigns: Map<String, String>,
+        eventSequenceStart: Long?,
+    ): List<EventFeedEntryUiModel> {
+        if (snapshot.eventHistory.isNotEmpty() || eventSequenceStart == null) {
+            return snapshot.toEventFeed(callsigns)
+        }
+        if (snapshot.events.isEmpty()) return uiState.eventFeed
+
+        val lastPublishedSequence = uiState.eventFeed.lastOrNull()?.sequence ?: Long.MIN_VALUE
+        val additions = snapshot.events.mapIndexedNotNull { index, event ->
+            val sequence = eventSequenceStart + index
+            if (sequence <= lastPublishedSequence) {
+                null
+            } else {
+                EventFeedEntryUiModel(
+                    sequence = sequence,
+                    elapsedSeconds = event.elapsedSeconds.toInt(),
+                    caption = eventCaption(event, callsigns, resources, fixNamesByPosition),
+                    aircraftIds = event.aircraftIdsForPresentation(),
+                    severity = event.toFeedSeverity(),
+                    rejectionCode = (event as? GameEvent.CommandRejected)?.reasonCode?.name,
+                )
+            }
+        }
+        if (additions.isEmpty()) return uiState.eventFeed
+        return (uiState.eventFeed + additions).takeLast(EVENT_FEED_CAPACITY)
+    }
 
     private fun cycleConflict(offset: Int) {
         val count = uiState.conflicts.size
@@ -1655,18 +1982,29 @@ class LiveGameViewModel internal constructor(
             suppressPersistedSession = true
             checkpointingDisabled = true
             checkpointJob?.cancel()
-            engine = null
+            clearEngine()
             lastSnapshot = null
             uiState = uiState.copy(
                 screen = AppScreen.MILESTONE,
-                endlessMilestone = milestone.toUiModel(),
+                endlessMilestone = milestone.toUiModel().copy(choicePending = true),
                 canContinue = true,
                 progressionSaveStatus = ProgressionSaveStatus.NOT_REQUIRED,
             )
             persistUiState()
-            checkpointJob = viewModelScope.launch {
-                preferences.saveEndlessMilestone(milestone)
-            }
+            checkpointJob = enqueuePersistence(
+                persistenceOperation(
+                    kind = PersistenceOperationKind.ENDLESS_MILESTONE,
+                    stableKey = activeAttemptId ?: "${descriptor.seed}:${descriptor.stage}",
+                    write = { preferences.saveEndlessMilestone(milestone) },
+                ),
+                onSaved = {
+                    if (playerData.endlessMilestone?.choice == EndlessMilestoneChoice.AWAITING) {
+                        uiState = uiState.copy(
+                            endlessMilestone = milestone.toUiModel().copy(choicePending = false),
+                        )
+                    }
+                },
+            )
             return
         }
 
@@ -1764,40 +2102,50 @@ class LiveGameViewModel internal constructor(
         if (pendingProgression != null) {
             persistPendingProgression()
         } else if (completed && descriptor is SessionDescriptor.Daily) {
-            checkpointJob = viewModelScope.launch {
-                runCatching {
-                    preferences.recordDailyResult(
+            val resultId = activeAttemptId ?: UUID.randomUUID().toString()
+            checkpointJob = enqueuePersistence(
+                persistenceOperation(
+                    kind = PersistenceOperationKind.DAILY_RESULT,
+                    stableKey = resultId,
+                    write = {
+                        preferences.commitDailyResult(
                         localDate = descriptor.localDate,
                         configurationIdentity = DailyShift.identityFor(descriptor.localDate),
-                        resultId = activeAttemptId ?: UUID.randomUUID().toString(),
+                        resultId = resultId,
                         score = finalScore,
                     )
-                    preferences.clearActiveSession()
-                }
-            }
+                    },
+                ),
+            )
         } else if (completed && descriptor is SessionDescriptor.Custom) {
-            checkpointJob = viewModelScope.launch {
-                runCatching {
-                    preferences.savePracticeResult(
-                        PracticeResultRecord(
-                            resultId = activeAttemptId ?: UUID.randomUUID().toString(),
-                            configurationIdentity = ShiftConfigurationCodec.encode(descriptor.configuration),
-                            score = finalScore,
-                            stars = stars,
-                            completedAtEpochMillis = System.currentTimeMillis(),
-                            rankedPreset = descriptor.configuration.isRanked,
-                        ),
-                    )
-                    preferences.clearActiveSession()
-                }
-            }
+            val practiceResult = PracticeResultRecord(
+                resultId = activeAttemptId ?: UUID.randomUUID().toString(),
+                configurationIdentity = ShiftConfigurationCodec.encode(descriptor.configuration),
+                score = finalScore,
+                stars = stars,
+                completedAtEpochMillis = clock.currentTimeMillis(),
+                rankedPreset = descriptor.configuration.isRanked,
+            )
+            checkpointJob = enqueuePersistence(
+                persistenceOperation(
+                    kind = PersistenceOperationKind.PRACTICE_RESULT,
+                    stableKey = practiceResult.resultId,
+                    write = { preferences.commitPracticeResult(practiceResult) },
+                ),
+            )
         } else {
-            checkpointJob = viewModelScope.launch { runCatching { preferences.clearActiveSession() } }
+            checkpointJob = enqueuePersistence(
+                persistenceOperation(
+                    kind = PersistenceOperationKind.ACTIVE_SESSION,
+                    stableKey = "terminal-clear:${activeAttemptId ?: snapshot.scenarioId}",
+                    write = preferences::clearActiveSession,
+                ),
+            )
         }
     }
 
     private fun saveCompletedReplay(descriptor: SessionDescriptor, snapshot: GameSnapshot) {
-        val payload = RestorableSession(
+        val replay = RestorableSession(
             descriptor = descriptor,
             savedTick = snapshot.tick,
             speedMultiplier = snapshot.speedMultiplier,
@@ -1807,11 +2155,12 @@ class LiveGameViewModel internal constructor(
             trainingStep = null,
             attemptId = activeAttemptId,
             entries = replayLog.toList(),
-        ).toPayload()
-        if (payload.length > MAX_SESSION_PAYLOAD_CHARS) return
-        val now = System.currentTimeMillis()
+        )
+        val now = clock.currentTimeMillis()
         viewModelScope.launch {
-            preferences.saveCompletedReplay(
+            val completed = withContext(computationDispatcher) {
+                val payload = replay.toPayload()
+                if (!payload.isWithinReplayPolicy()) return@withContext null
                 CompletedReplayRecord(
                     schemaVersion = SESSION_SCHEMA,
                     id = "${snapshot.scenarioId}-$now-${snapshot.tick}",
@@ -1821,28 +2170,56 @@ class LiveGameViewModel internal constructor(
                     finalScore = snapshot.score.total,
                     terminalHash = snapshot.terminalHash(),
                     payload = payload,
+                )
+            } ?: return@launch
+            enqueuePersistence(
+                persistenceOperation(
+                    kind = PersistenceOperationKind.COMPLETED_REPLAY,
+                    stableKey = completed.id,
+                    write = { preferences.saveCompletedReplay(completed) },
                 ),
             )
         }
     }
 
     private fun startReplay(replayId: String) {
-        val record = playerData.completedReplays.firstOrNull { it.id == replayId }
+        val summary = playerData.completedReplays.firstOrNull { it.id == replayId }
             ?: return showReplayError()
-        val saved = restorableFromRecord(
-            ActiveSessionRecord(
-                schemaVersion = record.schemaVersion,
-                scenarioId = record.scenarioId,
-                savedAtEpochMillis = record.savedAtEpochMillis,
-                payload = record.payload,
-            ),
-        ) ?: return showReplayError()
+        viewModelScope.launch {
+            val record = if (summary.isPayloadLoaded) {
+                summary
+            } else {
+                when (val loaded = preferences.loadCompletedReplayResult(replayId)) {
+                    is ReplayLoadResult.Loaded -> loaded.replay
+                    is ReplayLoadResult.Corrupt,
+                    ReplayLoadResult.NotFound,
+                    is ReplayLoadResult.StorageFailure -> return@launch showReplayError()
+                }
+            }
+            val saved = withContext(computationDispatcher) {
+                restorableFromRecord(
+                    ActiveSessionRecord(
+                        schemaVersion = record.schemaVersion,
+                        scenarioId = record.scenarioId,
+                        savedAtEpochMillis = record.savedAtEpochMillis,
+                        payload = record.payload,
+                    ),
+                )
+            } ?: return@launch showReplayError()
+            startLoadedReplay(record, saved)
+        }
+    }
+
+    private fun startLoadedReplay(
+        record: CompletedReplayRecord,
+        saved: RestorableSession,
+    ) {
         if (record.terminalTick != saved.savedTick || record.terminalHash.isBlank()) {
             return showReplayError()
         }
         val content = saved.descriptor.content()
-        val replayEngine = AtcSimulationEngine(content.toSimulationScenario())
-        val first = replayEngine.submit(PlayerCommand.Start)
+        val requestGeneration = invalidateEngine()
+        pauseWhenEngineReady = false
         replayController = ReplayController(
             saved = saved,
             terminalTick = record.terminalTick,
@@ -1852,7 +2229,6 @@ class LiveGameViewModel internal constructor(
         )
         activeDescriptor = saved.descriptor
         activeContent = content
-        engine = replayEngine
         lastSnapshot = null
         trails.clear()
         uiState = uiState.copy(
@@ -1869,8 +2245,15 @@ class LiveGameViewModel internal constructor(
             result = null,
             canContinue = false,
             replayError = null,
+            eventFeed = emptyList(),
+            fixes = fixesFor(),
         )
-        publish(first)
+        viewModelScope.launch {
+            val owned = simulationOwner.create(initialCommands = listOf(PlayerCommand.Start)) {
+                AtcSimulationEngine(content.toSimulationScenario())
+            }
+            acceptOwnedSimulation(owned, requestGeneration)
+        }
     }
 
     private fun showReplayError() {
@@ -1886,35 +2269,86 @@ class LiveGameViewModel internal constructor(
             completedReplays = uiState.completedReplays.filterNot { it.id == replayId },
             replayError = null,
         )
-        viewModelScope.launch { preferences.deleteCompletedReplay(replayId) }
+        enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.COMPLETED_REPLAY,
+                stableKey = "delete:$replayId",
+                write = { preferences.deleteCompletedReplay(replayId) },
+            ),
+        )
     }
 
     private fun advanceReplay(stepCount: Int) {
-        val controller = replayController ?: return
-        var current = engine?.snapshot ?: return
-        if (current.tick >= controller.terminalTick || current.status.isTerminal()) {
-            finishReplayVerification(current, controller)
-            return
-        }
-        repeat(stepCount.coerceIn(1, 4)) {
-            if (current.tick >= controller.terminalTick || current.status.isTerminal()) return@repeat
-            while (controller.nextEntryIndex < controller.saved.entries.size &&
-                controller.saved.entries[controller.nextEntryIndex].tick == current.tick
+        viewModelScope.launch { advanceReplayNow(stepCount) }
+    }
+
+    private suspend fun advanceReplayNow(stepCount: Int) {
+        replayOperationMutex.withLock {
+            val controller = replayController ?: return@withLock
+            val sessionId = engineSessionId ?: return@withLock
+            val initialIndex = controller.nextEntryIndex
+            val entries = controller.saved.entries
+            val transition = simulationOwner.mutate(sessionId) { replayEngine, initialFrame ->
+                var currentFrame = initialFrame
+                var entryIndex = initialIndex
+                var firstEventSequence: Long? = null
+                val events = mutableListOf<GameEvent>()
+
+                fun retainDelta(frame: SimulationFrame) {
+                    if (frame.snapshot.events.isNotEmpty()) {
+                        if (firstEventSequence == null) {
+                            firstEventSequence = frame.eventSequenceStart
+                        }
+                        events += frame.snapshot.events
+                    }
+                    currentFrame = frame
+                }
+
+                repeat(stepCount.coerceIn(1, 4)) {
+                    val current = currentFrame.snapshot
+                    if (current.tick >= controller.terminalTick ||
+                        current.status.isTerminal()
+                    ) {
+                        return@repeat
+                    }
+                    while (entryIndex < entries.size &&
+                        entries[entryIndex].tick == currentFrame.snapshot.tick
+                    ) {
+                        retainDelta(
+                            replayEngine.submitForPresentation(entries[entryIndex].command),
+                        )
+                        entryIndex += 1
+                    }
+                    retainDelta(replayEngine.advanceFixedStepsForPresentation(1))
+                }
+
+                val aggregatedFrame = if (events.isEmpty()) {
+                    currentFrame
+                } else {
+                    currentFrame.copy(
+                        snapshot = currentFrame.snapshot.copy(events = events.toList()),
+                        eventSequenceStart = checkNotNull(firstEventSequence),
+                    )
+                }
+                EngineMutation(frame = aggregatedFrame, value = entryIndex)
+            } ?: return@withLock
+
+            if (transition.sessionId != engineSessionId ||
+                transition.operationSequence <= lastAppliedEngineOperation
             ) {
-                current = checkNotNull(engine).submit(
-                    controller.saved.entries[controller.nextEntryIndex].command,
-                )
-                controller.nextEntryIndex += 1
+                return@withLock
             }
-            current = checkNotNull(engine).advanceFixedSteps(1)
-        }
-        publish(current)
-        if (current.tick >= controller.terminalTick || current.status.isTerminal()) {
-            finishReplayVerification(current, controller)
-        } else {
-            uiState = uiState.copy(
-                replay = uiState.replay?.copy(tick = current.tick),
-            )
+            controller.nextEntryIndex = transition.value
+            lastAppliedEngineOperation = transition.operationSequence
+            val current = transition.frame.snapshot
+            publishFrame(transition.frame)
+            if (current.tick >= controller.terminalTick || current.status.isTerminal()) {
+                finishReplayVerification(current, controller)
+            } else {
+                uiState = uiState.copy(
+                    replay = uiState.replay?.copy(tick = current.tick),
+                )
+            }
         }
     }
 
@@ -1922,59 +2356,91 @@ class LiveGameViewModel internal constructor(
         val controller = replayController ?: return
         val target = requestedTick.coerceIn(0L, controller.terminalTick)
         val content = controller.saved.descriptor.content()
-        val replayEngine = AtcSimulationEngine(content.toSimulationScenario())
-        var snapshot = replayEngine.submit(PlayerCommand.Start)
-        var entryIndex = 0
-        while (snapshot.tick < target && !snapshot.status.isTerminal()) {
-            while (entryIndex < controller.saved.entries.size &&
-                controller.saved.entries[entryIndex].tick == snapshot.tick
-            ) {
-                snapshot = replayEngine.submit(controller.saved.entries[entryIndex].command)
-                entryIndex += 1
+        val requestGeneration = invalidateEngine()
+        pauseWhenEngineReady = false
+        uiState = uiState.copy(
+            replay = uiState.replay?.copy(isPlaying = false),
+        )
+        viewModelScope.launch {
+            replayOperationMutex.withLock {
+                var rebuiltEntryIndex = 0
+                val owned = simulationOwner.createInitialized(
+                    factory = { AtcSimulationEngine(content.toSimulationScenario()) },
+                ) { replayEngine ->
+                    var frame = replayEngine.submitForPresentation(PlayerCommand.Start)
+                    while (frame.snapshot.tick < target && !frame.snapshot.status.isTerminal()) {
+                        while (rebuiltEntryIndex < controller.saved.entries.size &&
+                            controller.saved.entries[rebuiltEntryIndex].tick == frame.snapshot.tick
+                        ) {
+                            frame = replayEngine.submitForPresentation(
+                                controller.saved.entries[rebuiltEntryIndex].command,
+                            )
+                            rebuiltEntryIndex += 1
+                        }
+                        frame = replayEngine.advanceFixedStepsForPresentation(1)
+                    }
+                    while (rebuiltEntryIndex < controller.saved.entries.size &&
+                        controller.saved.entries[rebuiltEntryIndex].tick == frame.snapshot.tick &&
+                        frame.snapshot.status.isActive()
+                    ) {
+                        frame = replayEngine.submitForPresentation(
+                            controller.saved.entries[rebuiltEntryIndex].command,
+                        )
+                        rebuiltEntryIndex += 1
+                    }
+                    val fullSnapshot = replayEngine.snapshot
+                    SimulationFrame(
+                        snapshot = fullSnapshot,
+                        eventSequenceStart = fullSnapshot.eventHistoryStartSequence,
+                    )
+                }
+                trails.clear()
+                if (!acceptOwnedSimulation(owned, requestGeneration)) return@withLock
+                controller.nextEntryIndex = rebuiltEntryIndex
+                val snapshot = owned.frame.snapshot
+                if (snapshot.tick >= controller.terminalTick || snapshot.status.isTerminal()) {
+                    finishReplayVerification(snapshot, controller)
+                } else {
+                    uiState = uiState.copy(
+                        replay = uiState.replay?.copy(
+                            isPlaying = false,
+                            tick = snapshot.tick,
+                            verification = ReplayVerification.PENDING,
+                        ),
+                    )
+                }
             }
-            snapshot = replayEngine.advanceFixedSteps(1)
-        }
-        while (entryIndex < controller.saved.entries.size &&
-            controller.saved.entries[entryIndex].tick == snapshot.tick &&
-            snapshot.status.isActive()
-        ) {
-            snapshot = replayEngine.submit(controller.saved.entries[entryIndex].command)
-            entryIndex += 1
-        }
-        engine = replayEngine
-        controller.nextEntryIndex = entryIndex
-        lastSnapshot = null
-        trails.clear()
-        publish(snapshot)
-        if (snapshot.tick >= controller.terminalTick || snapshot.status.isTerminal()) {
-            finishReplayVerification(snapshot, controller)
-        } else {
-            uiState = uiState.copy(
-                replay = uiState.replay?.copy(
-                    isPlaying = false,
-                    tick = snapshot.tick,
-                    verification = ReplayVerification.PENDING,
-                ),
-            )
         }
     }
 
     private fun finishReplayVerification(snapshot: GameSnapshot, controller: ReplayController) {
-        val verified = snapshot.tick == controller.terminalTick &&
-            snapshot.status.isTerminal() &&
-            snapshot.score.total == controller.expectedScore &&
-            snapshot.terminalHash() == controller.expectedTerminalHash
         uiState = uiState.copy(
             replay = uiState.replay?.copy(
                 isPlaying = false,
                 tick = snapshot.tick,
-                verification = if (verified) {
-                    ReplayVerification.VERIFIED
-                } else {
-                    ReplayVerification.FAILED
-                },
+                verification = ReplayVerification.PENDING,
             ),
         )
+        syncSimulationClock()
+        viewModelScope.launch {
+            val terminalHash = withContext(computationDispatcher) { snapshot.terminalHash() }
+            if (replayController !== controller || lastSnapshot?.tick != snapshot.tick) {
+                return@launch
+            }
+            val verified = snapshot.tick == controller.terminalTick &&
+                snapshot.status.isTerminal() &&
+                snapshot.score.total == controller.expectedScore &&
+                terminalHash == controller.expectedTerminalHash
+            uiState = uiState.copy(
+                replay = uiState.replay?.copy(
+                    verification = if (verified) {
+                        ReplayVerification.VERIFIED
+                    } else {
+                        ReplayVerification.FAILED
+                    },
+                ),
+            )
+        }
     }
 
     private fun persistPendingProgression() {
@@ -1982,31 +2448,46 @@ class LiveGameViewModel internal constructor(
         pendingProgression = pending
         uiState = uiState.copy(progressionSaveStatus = ProgressionSaveStatus.SAVING)
         persistUiState()
-        checkpointJob = viewModelScope.launch {
-            try {
+        val operationKind = if (pending.endless) {
+            PersistenceOperationKind.ENDLESS_PAYOUT
+        } else {
+            PersistenceOperationKind.AUTHORED_RESULT
+        }
+        val stableKey = pending.validatedResult?.resultId
+            ?: "legacy:${pending.missionId}:${pending.stars}:${pending.score}"
+        checkpointJob = enqueuePersistence(
+            persistenceOperation(
+                kind = operationKind,
+                stableKey = stableKey,
+                write = {
                 if (pending.endless) {
                     val packId = (activeDescriptor as? SessionDescriptor.Endless)
                         ?.contentPackId ?: ContentRegistry.DEFAULT_PACK_ID
-                    preferences.recordEndlessHighScore(packId, pending.score)
+                    preferences.commitEndlessTerminalResult(packId, pending.score)
                 } else {
                     pending.validatedResult?.let {
-                        preferences.recordValidatedMissionResult(it)
-                    } ?: preferences.recordMissionResult(
-                        pending.missionId,
-                        pending.stars,
-                        pending.score,
-                    )
+                        preferences.commitValidatedMissionResult(it)
+                    } ?: run {
+                        preferences.recordMissionResult(
+                            pending.missionId,
+                            pending.stars,
+                            pending.score,
+                        )
+                        preferences.clearActiveSession()
+                    }
                 }
-                preferences.clearActiveSession()
+                },
+            ),
+            onSaved = {
                 pendingProgression = null
                 uiState = uiState.copy(progressionSaveStatus = ProgressionSaveStatus.SAVED)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
+                persistUiState()
+            },
+            onFailure = {
                 uiState = uiState.copy(progressionSaveStatus = ProgressionSaveStatus.FAILED)
-            }
-            persistUiState()
-        }
+                persistUiState()
+            },
+        )
     }
 
     private fun continueEndlessRun() {
@@ -2015,17 +2496,24 @@ class LiveGameViewModel internal constructor(
         val pending = milestone.copy(choice = EndlessMilestoneChoice.CONTINUE_PENDING)
         playerData = playerData.copy(endlessMilestone = pending)
         uiState = uiState.copy(endlessMilestone = pending.toUiModel())
-        viewModelScope.launch {
-            preferences.saveEndlessMilestone(pending)
-            startScenario(
-                SessionDescriptor.Endless(
-                    seed = pending.seed,
-                    stage = pending.completedStage + 1,
-                    cumulativeScore = pending.cumulativeScore,
-                    contentPackId = pending.contentPackId,
-                ),
-            )
-        }
+        enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.ENDLESS_MILESTONE,
+                stableKey = "continue:${pending.contentPackId}:${pending.seed}:" +
+                    "${pending.completedStage}:${pending.cumulativeScore}",
+                write = { preferences.saveEndlessMilestone(pending) },
+            ),
+            onSaved = {
+                startScenario(
+                    SessionDescriptor.Endless(
+                        seed = pending.seed,
+                        stage = pending.completedStage + 1,
+                        cumulativeScore = pending.cumulativeScore,
+                        contentPackId = pending.contentPackId,
+                    ),
+                )
+            },
+        )
     }
 
     private fun cashOutEndlessRun() {
@@ -2036,11 +2524,19 @@ class LiveGameViewModel internal constructor(
             playerData.progress.endlessHighScoreFor(pending.contentPackId)
         playerData = playerData.copy(endlessMilestone = pending)
         uiState = uiState.copy(endlessMilestone = pending.toUiModel())
-        viewModelScope.launch {
-            try {
-                preferences.saveEndlessMilestone(pending)
-                preferences.recordEndlessHighScore(pending.contentPackId, pending.cumulativeScore)
-                preferences.clearEndlessMilestone()
+        enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.ENDLESS_PAYOUT,
+                stableKey = "cash-out:${pending.contentPackId}:${pending.seed}:" +
+                    "${pending.completedStage}:${pending.cumulativeScore}",
+                write = {
+                    preferences.commitEndlessPayout(
+                        pending.contentPackId,
+                        pending.cumulativeScore,
+                    )
+                },
+            ),
+            onSaved = {
                 playerData = playerData.copy(endlessMilestone = null)
                 uiState = uiState.copy(
                     screen = AppScreen.RESULTS,
@@ -2066,13 +2562,13 @@ class LiveGameViewModel internal constructor(
                     progressionSaveStatus = ProgressionSaveStatus.SAVED,
                 )
                 persistUiState()
-            } catch (_: Exception) {
+            },
+            onFailure = {
                 uiState = uiState.copy(
                     endlessMilestone = pending.toUiModel(),
-                    sessionPersistenceFailed = true,
                 )
-            }
-        }
+            },
+        )
     }
 
     private fun openNextMission() {
@@ -2089,22 +2585,30 @@ class LiveGameViewModel internal constructor(
         if (replayController != null) {
             if (shouldPause) {
                 uiState = uiState.copy(replay = uiState.replay?.copy(isPlaying = false))
+                syncSimulationClock()
             }
             return
         }
-        val currentEngine = engine ?: return
-        val snapshot = lastSnapshot ?: currentEngine.snapshot
-        if (shouldPause && snapshot.status == GameStatus.RUNNING) {
-            publish(currentEngine.submit(PlayerCommand.Pause))
+        val snapshot = lastSnapshot ?: run {
+            if (shouldPause && activeDescriptor != null && uiState.screen == AppScreen.GAME) {
+                pauseWhenEngineReady = true
+            }
+            return
         }
-        if (snapshot.status.isActive()) checkpoint()
+        if (shouldPause && snapshot.status == GameStatus.RUNNING) {
+            submit(PlayerCommand.Pause, observeTraining = false) { paused ->
+                if (paused.status.isActive()) checkpoint()
+            }
+        } else if (snapshot.status.isActive()) {
+            checkpoint()
+        }
     }
 
     private fun checkpoint() {
         val descriptor = activeDescriptor ?: return
         val snapshot = lastSnapshot ?: return
         if (!snapshot.status.isActive() || checkpointingDisabled) return
-        if (replayLog.size > MAX_REPLAY_ENTRIES) {
+        if (replayLog.size > ReplayPolicy.MAX_COMMAND_COUNT) {
             disableSessionPersistence()
             return
         }
@@ -2127,33 +2631,43 @@ class LiveGameViewModel internal constructor(
         val pendingTrainingPersistence = trainingPersistenceJob
         lastCheckpointTick = snapshot.tick
         checkpointJob = viewModelScope.launch {
-            try {
-                pendingTrainingPersistence?.join()
-                val payload = withContext(Dispatchers.Default) { restorable.toPayload() }
-                if (payload.length > MAX_SESSION_PAYLOAD_CHARS) {
-                    disableSessionPersistence()
-                    return@launch
-                }
-                preferences.saveActiveSession(
-                    ActiveSessionRecord(
-                        schemaVersion = SESSION_SCHEMA,
-                        scenarioId = snapshot.scenarioId,
-                        savedAtEpochMillis = System.currentTimeMillis(),
-                        payload = payload,
-                    ),
-                )
-                if (descriptor is SessionDescriptor.Endless &&
-                    playerData.endlessMilestone?.choice == EndlessMilestoneChoice.CONTINUE_PENDING
-                ) {
-                    preferences.clearEndlessMilestone()
-                    playerData = playerData.copy(endlessMilestone = null)
-                    uiState = uiState.copy(endlessMilestone = null)
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
+            pendingTrainingPersistence?.join()
+            val payload = withContext(computationDispatcher) { restorable.toPayload() }
+            if (!payload.isWithinReplayPolicy()) {
                 disableSessionPersistence()
+                return@launch
             }
+            val record = ActiveSessionRecord(
+                schemaVersion = SESSION_SCHEMA,
+                scenarioId = snapshot.scenarioId,
+                savedAtEpochMillis = clock.currentTimeMillis(),
+                payload = payload,
+            )
+            val clearsPendingMilestone = descriptor is SessionDescriptor.Endless &&
+                playerData.endlessMilestone?.choice == EndlessMilestoneChoice.CONTINUE_PENDING
+            checkpointJob = enqueuePersistence(
+                persistenceOperation(
+                    kind = PersistenceOperationKind.ACTIVE_SESSION,
+                    stableKey = "checkpoint:${activeAttemptId ?: snapshot.scenarioId}:" +
+                        "${snapshot.tick}:${payload.hashCode()}",
+                    retryPolicy = PersistenceRetryPolicy.BOUNDED_BACKGROUND_RETRY,
+                    write = {
+                preferences.saveActiveSession(
+                            record,
+                )
+                        if (clearsPendingMilestone) preferences.clearEndlessMilestone()
+                    },
+                ),
+                onSaved = {
+                    checkpointingDisabled = false
+                    uiState = uiState.copy(sessionPersistenceFailed = false)
+                    if (clearsPendingMilestone) {
+                        playerData = playerData.copy(endlessMilestone = null)
+                        uiState = uiState.copy(endlessMilestone = null)
+                    }
+                },
+                onFailure = { disableSessionPersistence() },
+            )
         }
     }
 
@@ -2254,7 +2768,7 @@ class LiveGameViewModel internal constructor(
         validatedSessionAvailable = false
         uiState = uiState.copy(canContinue = false)
         sessionValidationJob = viewModelScope.launch {
-            val valid = withContext(Dispatchers.Default) { restorableFromRecord(record) != null }
+            val valid = withContext(computationDispatcher) { restorableFromRecord(record) != null }
             if (
                 playerData.activeSession?.toSessionKey() != key ||
                 lastSnapshot?.status?.isActive() == true
@@ -2268,13 +2782,14 @@ class LiveGameViewModel internal constructor(
             )
             if (!valid) {
                 suppressPersistedSession = true
-                try {
-                    preferences.clearActiveSession()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    // Keep the invalid record suppressed if storage is temporarily unavailable.
-                }
+                enqueuePersistence(
+                    persistenceOperation(
+                        kind = PersistenceOperationKind.ACTIVE_SESSION,
+                        stableKey = "discard-invalid:${record.scenarioId}:" +
+                            record.savedAtEpochMillis,
+                        write = preferences::clearActiveSession,
+                    ),
+                )
             }
         }
     }
@@ -2284,7 +2799,83 @@ class LiveGameViewModel internal constructor(
         val optimistic = transform(playerData.settings)
         playerData = playerData.copy(settings = optimistic)
         uiState = uiState.copy(settings = optimistic.toUiState())
-        viewModelScope.launch { preferences.updateSettings(transform) }
+        enqueuePersistence(
+            persistenceOperation(
+                kind = PersistenceOperationKind.SETTINGS,
+                stableKey = "settings:${++persistenceRevision}:$optimistic",
+                retryPolicy = PersistenceRetryPolicy.BOUNDED_BACKGROUND_RETRY,
+                write = { preferences.updateSettings { optimistic } },
+            ),
+        )
+    }
+
+    private fun persistenceOperation(
+        kind: PersistenceOperationKind,
+        stableKey: String,
+        retryPolicy: PersistenceRetryPolicy = PersistenceRetryPolicy.USER_RETRY,
+        write: suspend () -> Unit,
+    ) = PersistenceOperation(
+        id = PersistenceOperationId.forStableKey(kind, stableKey),
+        kind = kind,
+        retryPolicy = retryPolicy,
+        write = write,
+    )
+
+    private fun enqueuePersistence(
+        operation: PersistenceOperation,
+        onSaved: () -> Unit = {},
+        onFailure: (PersistenceOperationResult) -> Unit = {},
+    ): Job {
+        val pending = PendingPersistenceWrite(operation, onSaved, onFailure)
+        pendingPersistenceWrites[operation.id.value] = pending
+        return viewModelScope.launch { executePersistence(pending, explicitRetry = false) }
+    }
+
+    private suspend fun executePersistence(
+        pending: PendingPersistenceWrite,
+        explicitRetry: Boolean,
+    ) {
+        val result = if (explicitRetry) {
+            persistenceCoordinator.retry(pending.operation)
+        } else {
+            persistenceCoordinator.execute(pending.operation)
+        }
+        if (result.isSaved) {
+            if (pendingPersistenceWrites[pending.operation.id.value] === pending) {
+                pendingPersistenceWrites.remove(pending.operation.id.value)
+            }
+            pending.onSaved()
+        } else {
+            pending.onFailure(result)
+        }
+    }
+
+    private fun retryPersistence(operationId: String) {
+        val pending = pendingPersistenceWrites[operationId] ?: return
+        viewModelScope.launch { executePersistence(pending, explicitRetry = true) }
+    }
+
+    private fun applyPersistenceStatuses(
+        statuses: Map<PersistenceOperationId, PersistenceOperationStatus>,
+    ) {
+        val unresolved = statuses.values.lastOrNull { status ->
+            status.state != DurableWriteState.SAVED
+        }
+        uiState = uiState.copy(
+            persistenceStatus = unresolved?.let { status ->
+                PersistenceStatusUiModel(
+                    operationId = status.operationId.value,
+                    state = when (status.state) {
+                        DurableWriteState.SAVING -> PersistenceStatusUiState.SAVING
+                        DurableWriteState.FAILED_RETRYABLE ->
+                            PersistenceStatusUiState.FAILED_RETRYABLE
+                        DurableWriteState.FAILED_PERMANENT ->
+                            PersistenceStatusUiState.FAILED_PERMANENT
+                        DurableWriteState.SAVED -> error("Saved writes are not unresolved")
+                    },
+                )
+            },
+        )
     }
 
     private fun disableSessionPersistence() {
@@ -2476,11 +3067,23 @@ class LiveGameViewModel internal constructor(
         }
     }
 
-    private fun AircraftState.toUiModel(snapshot: GameSnapshot): AircraftUiModel {
-        val conflict = snapshot.conflicts
-            .filter { it.firstAircraftId == id || it.secondAircraftId == id }
-            .maxByOrNull { it.kind.severity }
-        return AircraftUiModel(
+    private fun List<Conflict>.indexByAircraftId(): Map<String, Conflict> {
+        val result = HashMap<String, Conflict>(size * 2)
+        forEach { conflict ->
+            fun retainMostSevere(aircraftId: String) {
+                val retained = result[aircraftId]
+                if (retained == null || conflict.kind.severity > retained.kind.severity) {
+                    result[aircraftId] = conflict
+                }
+            }
+            retainMostSevere(conflict.firstAircraftId)
+            retainMostSevere(conflict.secondAircraftId)
+        }
+        return result
+    }
+
+    private fun AircraftState.toUiModel(conflict: Conflict?): AircraftUiModel =
+        AircraftUiModel(
             id = id,
             callsign = callsign,
             type = type.displayCode,
@@ -2508,16 +3111,15 @@ class LiveGameViewModel internal constructor(
             },
             holdFixName = hold?.fix?.let { fixNamesByPosition[it] },
             holdSeconds = holdAccumulatedSeconds.roundToInt(),
-            handoffStatus = handoff?.status?.name,
+            handoffStatus = handoff?.status?.toUiStatus(),
+            handoffStatusLabel = handoff?.status?.let { status ->
+                resources.getString(status.labelResource())
+            },
             exitClearanceGranted = exitClearanceGranted,
         )
-    }
 
     private fun GameSnapshot.toRunwayUiModels(): List<RunwayUiModel> {
-        val content = activeContent
-        val wind = content?.weather?.let {
-            String.format(Locale.UK, "%03d° / %02d kt", it.windDirectionDegrees, it.windSpeedKnots)
-        } ?: "Calm"
+        val wind = weatherPresenter.wind(weather)
         return runways.map { runway ->
             RunwayUiModel(
                 id = runway.id,
@@ -2534,7 +3136,7 @@ class LiveGameViewModel internal constructor(
         }
     }
 
-    private fun fixesFor(@Suppress("UNUSED_PARAMETER") snapshot: GameSnapshot): List<FixUiModel> = buildList {
+    private fun fixesFor(): List<FixUiModel> = buildList {
         val airport = activeAirport()
         airport.fixes.forEach { fix ->
             add(
@@ -2601,12 +3203,20 @@ class LiveGameViewModel internal constructor(
         )
     }
 
+    private fun String.isWithinReplayPolicy(): Boolean =
+        ReplayPolicy.encodedByteCount(this) <= ReplayPolicy.MAX_ENCODED_BYTES &&
+            ReplayPolicy.commandCount(this) <= ReplayPolicy.MAX_COMMAND_COUNT
+
     private fun restorableFromRecord(record: ActiveSessionRecord?): RestorableSession? {
-        if (record == null || record.schemaVersion !in MIN_SESSION_SCHEMA..SESSION_SCHEMA) return null
+        if (record == null ||
+            record.schemaVersion !in ReplayPolicy.MIN_SUPPORTED_SCHEMA..ReplayPolicy.MAX_SUPPORTED_SCHEMA
+        ) {
+            return null
+        }
         return runCatching {
-            require(record.payload.length <= MAX_SESSION_PAYLOAD_CHARS)
+            require(record.payload.isWithinReplayPolicy())
             val lines = record.payload.split('\n')
-            require(lines.size in 3..(MAX_REPLAY_ENTRIES + 3))
+            require(lines.size in 3..(ReplayPolicy.MAX_COMMAND_COUNT + 3))
             require(lines[0] == "replay-v${record.schemaVersion}")
 
             val descriptorFields = lines[1].split('|')
@@ -2996,6 +3606,12 @@ class LiveGameViewModel internal constructor(
         val validatedResult: ValidatedMissionResult?,
     )
 
+    private data class PendingPersistenceWrite(
+        val operation: PersistenceOperation,
+        val onSaved: () -> Unit,
+        val onFailure: (PersistenceOperationResult) -> Unit,
+    )
+
     companion object {
         private const val TICK_MILLIS = 100L
         private const val TICK_SECONDS = 0.1
@@ -3004,13 +3620,10 @@ class LiveGameViewModel internal constructor(
         private const val TRAIL_POINT_COUNT = 10
         private const val EVENT_FEED_CAPACITY = AtcSimulationEngine.EVENT_HISTORY_CAPACITY
         private const val MAX_TRAINING_STEPS = 100
-        private const val MIN_SESSION_SCHEMA = 2
-        private const val SESSION_SCHEMA = 5
+        private const val SESSION_SCHEMA = ReplayPolicy.MAX_SUPPORTED_SCHEMA
         private const val SESSION_PAYLOAD_PREFIX = "replay-v5"
-        private const val MAX_REPLAY_ENTRIES = 4_096
         private const val MAX_ROUTE_POINTS = AtcSimulationEngine.MAX_ROUTE_WAYPOINTS
         private const val MAX_ENDLESS_STAGE = 10_000
-        private const val MAX_SESSION_PAYLOAD_CHARS = 500_000
         private const val ENDLESS_SELECTION_ID = "endless"
         private const val CUSTOM_SELECTION_ID = "custom"
         private const val DAILY_SELECTION_ID = "daily"
@@ -3430,7 +4043,6 @@ private fun PlayerSettings.toUiState() = SettingsUiState(
     highContrast = highContrast,
     labelScale = labelScale,
     labelDeclutteringEnabled = labelDeclutteringEnabled,
-    routeSnappingEnabled = routeSnappingEnabled,
     pauseOnFocusLoss = pauseOnFocusLoss,
 )
 
@@ -3452,7 +4064,6 @@ private fun customShiftUi(configuration: ShiftConfiguration): CustomShiftUiModel
         weatherPreset = configuration.weatherPreset.name,
         fuelPressure = configuration.fuelPressure.name,
         strikeLimit = configuration.strikeLimit,
-        routeSnapping = configuration.assists.routeSnapping,
         approachSetup = configuration.assists.approachSetup,
         conflictPrediction = configuration.assists.conflictPrediction,
         previewTraffic = traffic,
@@ -3624,6 +4235,14 @@ private fun FailureReason?.toDisplayText(resources: Resources): String = resourc
 private fun GameStatus.isActive() = this == GameStatus.RUNNING || this == GameStatus.PAUSED
 private fun GameStatus.isTerminal() = this == GameStatus.COMPLETED || this == GameStatus.FAILED
 
+private fun HandoffStatus.toUiStatus(): HandoffStatusUi = when (this) {
+    HandoffStatus.OFFERED -> HandoffStatusUi.OFFERED
+    HandoffStatus.REQUESTED -> HandoffStatusUi.REQUESTED
+    HandoffStatus.ACKNOWLEDGED -> HandoffStatusUi.ACKNOWLEDGED
+    HandoffStatus.COMPLETED -> HandoffStatusUi.COMPLETED
+    HandoffStatus.TIMED_OUT -> HandoffStatusUi.TIMED_OUT
+}
+
 private fun PlayerCommand.isReplayable() = when (this) {
     is PlayerCommand.AppendWaypoint,
     is PlayerCommand.AssignApproach,
@@ -3655,7 +4274,10 @@ private fun PlayerCommand.isReplayable() = when (this) {
     is PlayerCommand.SetSimulationSpeed -> false
 }
 
-private fun PlayerCommand.aircraftId(): String = when (this) {
+private fun PlayerCommand.aircraftId(): String =
+    requireNotNull(aircraftIdOrNull()) { "Command does not target an aircraft" }
+
+private fun PlayerCommand.aircraftIdOrNull(): String? = when (this) {
     is PlayerCommand.AppendWaypoint -> aircraftId
     is PlayerCommand.AssignApproach -> aircraftId
     is PlayerCommand.AssignRunway -> aircraftId
@@ -3667,7 +4289,7 @@ private fun PlayerCommand.aircraftId(): String = when (this) {
     is PlayerCommand.IssueExitClearance -> aircraftId
     is PlayerCommand.AcknowledgeInboundHandoff -> aircraftId
     is PlayerCommand.InitiateOutboundHandoff -> aircraftId
-    is PlayerCommand.AcknowledgeDynamicEvent -> error("Command does not target an aircraft")
+    is PlayerCommand.AcknowledgeDynamicEvent -> null
     is PlayerCommand.CrossRunway -> aircraftId
     is PlayerCommand.ClearRoute -> aircraftId
     is PlayerCommand.ClearForTakeoff -> aircraftId
@@ -3683,7 +4305,7 @@ private fun PlayerCommand.aircraftId(): String = when (this) {
     PlayerCommand.Pause,
     PlayerCommand.Resume,
     PlayerCommand.Start,
-    is PlayerCommand.SetSimulationSpeed -> error("Command does not target an aircraft")
+    is PlayerCommand.SetSimulationSpeed -> null
 }
 
 private fun GameEvent.feedbackKind(): LiveFeedbackKind? = when (this) {
@@ -3935,7 +4557,7 @@ internal fun eventCaption(
             R.string.event_handoff_changed,
             call(aircraftId),
             sectorId,
-            status.name.lowercase().replace('_', ' '),
+            resources.getString(status.labelResource()),
         )
         is GameEvent.DynamicEventChanged -> resources.getString(
             R.string.event_dynamic_changed,
@@ -3946,7 +4568,7 @@ internal fun eventCaption(
                 DynamicEventType.EQUIPMENT_OUTAGE -> R.string.dynamic_equipment_outage
                 DynamicEventType.PRIORITY_FLIGHT -> R.string.dynamic_priority_flight
             }),
-            lifecycle.name.lowercase().replace('_', ' '),
+            resources.getString(lifecycle.labelResource()),
             aircraftId?.let { call(it) } ?: runwayId ?: resources.getString(R.string.radar_system),
         )
         is GameEvent.RunwayCrossingStarted -> resources.getString(
@@ -4069,7 +4691,6 @@ private fun ContentScenarioDefinition.toTrainingScenario(): ContentScenarioDefin
     )
     return copy(
         id = "${id}_academy_v1",
-        title = "$title Academy",
         traffic = traffic.mapIndexed { index, spawn ->
             if (index == 0) spawn.copy(spawnAtSeconds = 0) else spawn
         },

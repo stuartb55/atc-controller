@@ -18,9 +18,13 @@ class ShiftConfigurationTest {
             weatherPreset = WeatherPreset.LOW_VISIBILITY,
             fuelPressure = FuelPressure.TIGHT,
             strikeLimit = 2,
-            assists = ShiftAssists(false, false, true),
+            assists = ShiftAssists(
+                approachSetup = false,
+                conflictPrediction = true,
+            ),
         )
 
+        assertTrue(ShiftConfigurationCodec.encode(configuration).startsWith("ATC3."))
         assertEquals(
             configuration,
             ShiftConfigurationCodec.decode(ShiftConfigurationCodec.encode(configuration)),
@@ -40,7 +44,7 @@ class ShiftConfigurationTest {
         val code = ShiftConfigurationCodec.encode(configuration)
         val scenario = CustomShiftGenerator.generate(configuration)
 
-        assertTrue(code.startsWith("ATC2."))
+        assertTrue(code.startsWith("ATC4."))
         assertEquals(configuration, ShiftConfigurationCodec.decode(code))
         assertEquals(CoastalContent.AIRPORT_ID, scenario.airportId)
         assertTrue(scenario.runwayConfiguration.arrivalEndIds.all { it in setOf("27", "36") })
@@ -51,12 +55,37 @@ class ShiftConfigurationTest {
     }
 
     @Test
-    fun legacyManchesterCodesKeepTheirOriginalImplicitNamespace() {
-        val configuration = ShiftConfiguration(seed = 8675309)
-        val code = ShiftConfigurationCodec.encode(configuration)
+    fun legacyCodesIgnoreRetiredRouteFlagAndMigrateToNewSchema() {
+        val routeOffCode =
+            "ATC1.MXw4Njc1MzA5fEJBTEFOQ0VEfDYwfFdFU1RFUkxZfENBTE18U1RBTkRBUkR8M3wwfDF8MXw.1a1gzfg"
+        val routeOnCode =
+            "ATC1.MXw4Njc1MzA5fEJBTEFOQ0VEfDYwfFdFU1RFUkxZfENBTE18U1RBTkRBUkR8M3wxfDF8MXw.0ymolww"
 
-        assertTrue(code.startsWith("ATC1."))
-        assertEquals(ContentRegistry.DEFAULT_PACK_ID, ShiftConfigurationCodec.decode(code)?.contentPackId)
+        val routeOff = ShiftConfigurationCodec.decode(routeOffCode)
+        val routeOn = ShiftConfigurationCodec.decode(routeOnCode)
+
+        assertEquals(routeOff, routeOn)
+        assertEquals(ContentRegistry.DEFAULT_PACK_ID, routeOff?.contentPackId)
+        assertTrue(ShiftConfigurationCodec.encode(checkNotNull(routeOff)).startsWith("ATC3."))
+        assertEquals(
+            CustomShiftGenerator.generate(checkNotNull(routeOff)).id,
+            CustomShiftGenerator.generate(checkNotNull(routeOn)).id,
+        )
+    }
+
+    @Test
+    fun legacyNamespacedCodeKeepsPackAndAssistChoices() {
+        val legacyCode =
+            "ATC2.ZmljdGlvbmFsX2NvYXN0YWxfdjF8MXw3M3xCVVNZfDYwfEVBU1RFUkxZfENBTE18U1RBTkRBUkR8M3wwfDB8MXw.1nsxusd"
+
+        val decoded = ShiftConfigurationCodec.decode(legacyCode)
+
+        assertEquals(CoastalContent.PACK_ID, decoded?.contentPackId)
+        assertEquals(
+            ShiftAssists(approachSetup = false, conflictPrediction = true),
+            decoded?.assists,
+        )
+        assertTrue(ShiftConfigurationCodec.encode(checkNotNull(decoded)).startsWith("ATC4."))
     }
 
     @Test

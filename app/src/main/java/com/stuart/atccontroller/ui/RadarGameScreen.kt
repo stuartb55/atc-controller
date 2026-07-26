@@ -73,12 +73,14 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -99,17 +101,19 @@ private val AircraftLabelHeight = 50.dp
 private val FixLabelWidth = 96.dp
 private val FixLabelHeight = 18.dp
 private val RadarContentInset = 6.dp
+private val MinimumRadarViewportHeight = 160.dp
+private val MinimumCommandViewportHeight = 120.dp
+private val MinimumRadarLabelFontSize = 11.sp
+private const val LargeTextFontScale = 1.3f
 
 @Composable
 fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val compact = (maxWidth < 800.dp) || (maxHeight < 430.dp)
+        val fontScale = LocalDensity.current.fontScale
+        val compactLargeText = fontScale >= LargeTextFontScale &&
+            (maxWidth < 1_000.dp || maxHeight < 700.dp)
+        val compact = (maxWidth < 800.dp) || (maxHeight < 430.dp) || compactLargeText
         val stacked = (maxWidth < 680.dp) && (maxHeight >= 520.dp)
-        val commandDeckHeight = when {
-            maxHeight < 700.dp -> 276.dp
-            maxHeight < 850.dp -> 316.dp
-            else -> 360.dp
-        }
         Box(Modifier.fillMaxSize()) {
             Column(Modifier.fillMaxSize().padding(if (compact) 10.dp else 12.dp)) {
                 GameStatusBar(state, compact, onAction)
@@ -117,59 +121,93 @@ fun GameScreen(state: GameUiState, onAction: (GameAction) -> Unit) {
                     Spacer(Modifier.height(5.dp))
                     ReplayControls(replay, state, onAction)
                 }
-                Spacer(Modifier.height(if (compact) 10.dp else 8.dp))
-                MissionProgressRail(state)
+                Spacer(Modifier.height(if (compactLargeText) 6.dp else if (compact) 10.dp else 8.dp))
+                MissionProgressRail(state, compactLargeText)
                 state.training?.let { training ->
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(if (compactLargeText) 5.dp else 8.dp))
                     CommandGuidanceCard(
                         training = training,
                         onDismiss = { onAction(GameAction.DismissTutorial) },
+                        compactLargeText = compactLargeText,
                     )
                 }
-                Spacer(Modifier.height(if (compact) 12.dp else 10.dp))
-                if (stacked) {
-                    RadarDisplay(
-                        state = state,
-                        onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
-                        onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
-                        onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
-                        onSelectEvent = { sequence, aircraftId ->
-                            onAction(GameAction.SelectEvent(sequence, aircraftId))
-                        },
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    CommandPanel(
-                        state = state,
-                        onAction = onAction,
-                        compact = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(commandDeckHeight),
-                    )
-                } else {
-                    Row(
-                        Modifier.weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp),
-                    ) {
-                        RadarDisplay(
-                            state = state,
-                            onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
-                            onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
-                            onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
-                            onSelectEvent = { sequence, aircraftId ->
-                                onAction(GameAction.SelectEvent(sequence, aircraftId))
-                            },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                Spacer(Modifier.height(if (compactLargeText) 6.dp else if (compact) 12.dp else 10.dp))
+                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                    if (stacked) {
+                        val contentGap = if (compactLargeText) 8.dp else 12.dp
+                        val availableHeight = (maxHeight - contentGap).coerceAtLeast(0.dp)
+                        // Keep a genuinely interactive radar whenever the remaining height permits
+                        // it, then let the independently scrolling command deck use the balance.
+                        val minimumRadarHeight = minOf(
+                            MinimumRadarViewportHeight,
+                            availableHeight * .45f,
                         )
-                        CommandPanel(
-                            state = state,
-                            onAction = onAction,
-                            compact = compact,
-                            modifier = Modifier
-                                .width(if (compact) 300.dp else 348.dp)
-                                .fillMaxHeight(),
+                        val minimumCommandHeight = minOf(
+                            MinimumCommandViewportHeight,
+                            (availableHeight - minimumRadarHeight).coerceAtLeast(0.dp),
                         )
+                        val commandFraction = when {
+                            fontScale >= 2f -> .58f
+                            compactLargeText -> .54f
+                            maxHeight < 480.dp -> .48f
+                            else -> .52f
+                        }
+                        val maximumCommandHeight =
+                            (availableHeight - minimumRadarHeight).coerceAtLeast(minimumCommandHeight)
+                        val preferredCommandHeight = (availableHeight * commandFraction)
+                            .coerceIn(minimumCommandHeight, maximumCommandHeight)
+
+                        Column(Modifier.fillMaxSize()) {
+                            RadarDisplay(
+                                state = state,
+                                onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
+                                onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
+                                onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
+                                onSelectEvent = { sequence, aircraftId ->
+                                    onAction(GameAction.SelectEvent(sequence, aircraftId))
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .heightIn(min = minimumRadarHeight),
+                            )
+                            Spacer(Modifier.height(contentGap))
+                            CommandPanel(
+                                state = state,
+                                onAction = onAction,
+                                compact = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(
+                                        min = minimumCommandHeight,
+                                        max = preferredCommandHeight,
+                                    ),
+                            )
+                        }
+                    } else {
+                        Row(
+                            Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp),
+                        ) {
+                            RadarDisplay(
+                                state = state,
+                                onSelectAircraft = { onAction(GameAction.SelectAircraft(it)) },
+                                onDirectToFix = { onAction(GameAction.DirectToFix(it)) },
+                                onCycleConflict = { onAction(GameAction.CycleConflict(it)) },
+                                onSelectEvent = { sequence, aircraftId ->
+                                    onAction(GameAction.SelectEvent(sequence, aircraftId))
+                                },
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                            CommandPanel(
+                                state = state,
+                                onAction = onAction,
+                                compact = compact,
+                                modifier = Modifier
+                                    .width(if (compact) 300.dp else 348.dp)
+                                    .fillMaxHeight(),
+                            )
+                        }
                     }
                 }
             }
@@ -337,6 +375,7 @@ private fun ReplayControls(
 @Composable
 private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameAction) -> Unit) {
     val colors = MaterialTheme.atcColors
+    val compactLargeText = compact && LocalDensity.current.fontScale >= LargeTextFontScale
     val leaveDescription = stringResource(
         if (state.replay != null) R.string.cd_back else R.string.cd_leave_shift,
     )
@@ -350,7 +389,7 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
         else -> state.selectedMission?.title ?: stringResource(R.string.active_sector)
     }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val narrow = maxWidth < 650.dp
+        val narrow = maxWidth < 650.dp || compactLargeText
         val leaveButton: @Composable () -> Unit = {
             Surface(
                 modifier = Modifier
@@ -427,13 +466,15 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
             ) {
                 leaveButton()
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        sessionTitle,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = colors.white,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (!compactLargeText) {
+                        Text(
+                            sessionTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = colors.white,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     Text(
                         stringResource(
                             R.string.compact_hud_summary,
@@ -443,7 +484,7 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.muted,
-                        maxLines = 1,
+                        maxLines = if (compactLargeText) 2 else 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
@@ -455,7 +496,7 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
             }
         } else {
             Row(
-                Modifier.fillMaxWidth().height(if (compact) 48.dp else 50.dp),
+                Modifier.fillMaxWidth().heightIn(min = if (compact) 48.dp else 50.dp),
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -476,7 +517,7 @@ private fun GameStatusBar(state: GameUiState, compact: Boolean, onAction: (GameA
 
 /** Keeps the active objective and deadline visible while an aircraft command page is open. */
 @Composable
-private fun MissionProgressRail(state: GameUiState) {
+private fun MissionProgressRail(state: GameUiState, compactLargeText: Boolean) {
     val colors = MaterialTheme.atcColors
     val objective = focusedObjective(state.objectiveProgress)
     val objectiveLabel = objective?.let { stringResource(objectiveLabelResource(it.kind)) }
@@ -515,7 +556,7 @@ private fun MissionProgressRail(state: GameUiState) {
         border = BorderStroke(1.dp, borderColor),
     ) {
         BoxWithConstraints {
-            val compactRail = maxWidth < 520.dp
+            val compactRail = maxWidth < 520.dp || compactLargeText
             if (compactRail) {
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp),
@@ -534,7 +575,7 @@ private fun MissionProgressRail(state: GameUiState) {
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = colors.white,
-                                maxLines = 1,
+                                maxLines = if (compactLargeText) 2 else 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                             Text(
@@ -554,27 +595,48 @@ private fun MissionProgressRail(state: GameUiState) {
                             trackColor = colors.line,
                         )
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            timeLabel,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = deadlineColor,
-                            maxLines = 1,
-                        )
-                        Text("  •  ", style = MaterialTheme.typography.labelSmall, color = colors.line)
+                    if (compactLargeText) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                timeLabel,
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = deadlineColor,
+                            )
+                            StarRating(state.starForecast.securedStars, compact = true)
+                        }
                         Text(
                             pluralStringResource(
                                 R.plurals.movements_remaining,
                                 state.movementsRemaining,
                                 state.movementsRemaining,
                             ),
-                            modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.muted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
                         )
-                        StarRating(state.starForecast.securedStars, compact = true)
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                timeLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = deadlineColor,
+                                maxLines = 1,
+                            )
+                            Text("  •  ", style = MaterialTheme.typography.labelSmall, color = colors.line)
+                            Text(
+                                pluralStringResource(
+                                    R.plurals.movements_remaining,
+                                    state.movementsRemaining,
+                                    state.movementsRemaining,
+                                ),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            StarRating(state.starForecast.securedStars, compact = true)
+                        }
                     }
                 }
             } else {
@@ -775,6 +837,7 @@ private fun RadarDisplay(
     val aircraftActionLabels = state.aircraft.associateBy({ it.id }) {
         stringResource(R.string.action_select_aircraft, it.callsign)
     }
+    val activeAircraftIds = state.aircraft.mapTo(HashSet(state.aircraft.size)) { it.id }
 
     Surface(
         modifier = modifier.testTag("radar_display"),
@@ -1014,9 +1077,7 @@ private fun RadarDisplay(
             }
 
             latestFeedbackEvent(state.eventFeed, state.elapsedSeconds)?.let { entry ->
-                val aircraftId = entry.aircraftIds.firstOrNull { aircraftId ->
-                    state.aircraft.any { it.id == aircraftId }
-                }
+                val aircraftId = entry.aircraftIds.firstOrNull(activeAircraftIds::contains)
                 RadarEventFeedback(
                     entry = entry,
                     canSelectAircraft = aircraftId != null,
@@ -1105,6 +1166,7 @@ private fun RadarContextPanel(state: GameUiState, modifier: Modifier = Modifier)
 private fun CommandGuidanceCard(
     training: TrainingUiModel,
     onDismiss: () -> Unit,
+    compactLargeText: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
@@ -1123,23 +1185,29 @@ private fun CommandGuidanceCard(
         border = BorderStroke(1.dp, if (training.rejectionMessage == null) colors.cyan else colors.amber),
     ) {
         Row(
-            Modifier.padding(start = 10.dp, top = 7.dp, bottom = 7.dp),
+            Modifier.padding(
+                start = 10.dp,
+                top = if (compactLargeText) 5.dp else 7.dp,
+                bottom = if (compactLargeText) 5.dp else 7.dp,
+            ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    stringResource(
-                        R.string.training_step_kicker,
-                        training.stepIndex + 1,
-                    ).uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = colors.cyan,
-                )
+                if (!compactLargeText) {
+                    Text(
+                        stringResource(
+                            R.string.training_step_kicker,
+                            training.stepIndex + 1,
+                        ).uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.cyan,
+                    )
+                }
                 Text(
                     training.prompt,
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.white,
-                    maxLines = 2,
+                    maxLines = if (compactLargeText) Int.MAX_VALUE else 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 training.rejectionMessage?.let { rejection ->
@@ -1147,7 +1215,7 @@ private fun CommandGuidanceCard(
                         rejection,
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.amber,
-                        maxLines = 2,
+                        maxLines = if (compactLargeText) Int.MAX_VALUE else 2,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                     )
@@ -1528,9 +1596,10 @@ private fun DrawScope.drawPolyline(points: List<NormalizedPoint>, color: Color, 
 }
 
 private fun DrawScope.drawConflicts(state: GameUiState, colors: AtcPalette) {
+    val aircraftById = state.aircraft.associateBy(AircraftUiModel::id)
     state.conflicts.forEach { conflict ->
-        val first = state.aircraft.firstOrNull { it.id == conflict.firstAircraftId } ?: return@forEach
-        val second = state.aircraft.firstOrNull { it.id == conflict.secondAircraftId } ?: return@forEach
+        val first = aircraftById[conflict.firstAircraftId] ?: return@forEach
+        val second = aircraftById[conflict.secondAircraftId] ?: return@forEach
         val firstPoint = first.position.toOffset(size)
         val secondPoint = second.position.toOffset(size)
         val color = if (conflict.isLossOfSeparation) colors.red else colors.amber
@@ -1708,8 +1777,16 @@ private fun AircraftDataLabel(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     when (aircraft.conflictLevel) {
-                        ConflictLevel.PREDICTED -> Text("△", color = accent, fontSize = 9.sp)
-                        ConflictLevel.LOSS -> Text("◆", color = accent, fontSize = 9.sp)
+                        ConflictLevel.PREDICTED -> Text(
+                            "△",
+                            color = accent,
+                            fontSize = MinimumRadarLabelFontSize,
+                        )
+                        ConflictLevel.LOSS -> Text(
+                            "◆",
+                            color = accent,
+                            fontSize = MinimumRadarLabelFontSize,
+                        )
                         ConflictLevel.NONE -> Unit
                     }
                     Text(
@@ -1732,7 +1809,7 @@ private fun AircraftDataLabel(
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.white,
-                        fontSize = 9.sp,
+                        fontSize = MinimumRadarLabelFontSize,
                         maxLines = 1,
                     )
                 } else {
@@ -1743,7 +1820,7 @@ private fun AircraftDataLabel(
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = colors.white,
-                        fontSize = 9.sp,
+                        fontSize = MinimumRadarLabelFontSize,
                         maxLines = 1,
                     )
                 }
@@ -1997,8 +2074,12 @@ private fun AircraftControlPage(
         onDeselect = { onAction(GameAction.SelectAircraft(null)) },
     )
     PrimaryClearanceActions(aircraft, state, onAction)
+    state.commandReadback
+        ?.takeIf { readback -> readback.aircraftId == aircraft.id }
+        ?.let { readback -> CommandReadbackCard(readback) }
     SectionLabel(stringResource(R.string.vector_controls))
     CompactVectorControls(aircraft, onAction)
+    DirectVectorAssignmentControls(aircraft, onAction)
     RunwayAndProcedureControls(aircraft, state, onAction)
     FuelStatus(aircraft.fuelPercent)
 }
@@ -2341,7 +2422,7 @@ private fun RunwayAndProcedureControls(
 
     if (!state.proceduralControlEnabled) return
     if (aircraft.phase == FlightPhase.ARRIVAL || aircraft.phase == FlightPhase.APPROACH) {
-        if (aircraft.handoffStatus == "OFFERED") {
+        if (aircraft.handoffStatus == HandoffStatusUi.OFFERED) {
             PrimaryActionButton(
                 text = stringResource(R.string.accept_inbound_handoff),
                 onClick = { onAction(GameAction.AcknowledgeInboundHandoff) },
@@ -2380,19 +2461,47 @@ private fun RunwayAndProcedureControls(
             modifier = Modifier.fillMaxWidth(),
             enabled = !aircraft.exitClearanceGranted,
         )
+        val handoffAlreadyActive = aircraft.handoffStatus in setOf(
+            HandoffStatusUi.REQUESTED,
+            HandoffStatusUi.ACKNOWLEDGED,
+            HandoffStatusUi.COMPLETED,
+        )
+        val handoffEligible = aircraft.exitClearanceGranted && !handoffAlreadyActive
+        val disabledReason = when {
+            !aircraft.exitClearanceGranted -> stringResource(R.string.rejection_exit_required)
+            handoffAlreadyActive -> stringResource(R.string.rejection_handoff_active)
+            else -> null
+        }
         PrimaryActionButton(
             text = stringResource(R.string.initiate_handoff),
             onClick = { onAction(GameAction.InitiateOutboundHandoff) },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = aircraft.exitClearanceGranted &&
-                aircraft.handoffStatus !in setOf("REQUESTED", "ACKNOWLEDGED", "COMPLETED"),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics {
+                    if (!handoffEligible) {
+                        disabled()
+                        stateDescription = disabledReason.orEmpty()
+                    }
+                },
+            enabled = handoffEligible,
         )
+        disabledReason?.let { reason ->
+            Text(
+                text = reason,
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.muted,
+            )
+        }
     }
-    aircraft.handoffStatus?.let { status ->
+    aircraft.handoffStatusLabel?.let { status ->
         Text(
-            stringResource(R.string.handoff_status, status.lowercase().replace('_', ' ')),
+            stringResource(R.string.handoff_status, status),
             style = MaterialTheme.typography.labelSmall,
-            color = if (status == "TIMED_OUT") colors.red else colors.cyan,
+            color = if (aircraft.handoffStatus == HandoffStatusUi.TIMED_OUT) {
+                colors.red
+            } else {
+                colors.cyan
+            },
         )
     }
 }
