@@ -54,6 +54,27 @@ class SupportingScreensTest {
     }
 
     @Test
+    fun completedLessonIsClearlyPresentedAsReplayable() {
+        val mission = shellTestState().missions.single().copy(trainingCompleted = true)
+        composeRule.setContent {
+            AtcControllerTheme {
+                Box(Modifier.size(width = 360.dp, height = 800.dp)) {
+                    MissionSelectScreen(
+                        shellTestState().copy(missions = listOf(mission)),
+                        onAction = {},
+                    )
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("LESSON COMPLETE").assertIsDisplayed()
+        composeRule.onNodeWithText("REPLAY GUIDED LESSON")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertHasClickAction()
+    }
+
+    @Test
     fun compactMissionSelectionUsesOneScrollContainerAndReachesTheLastMission() {
         val actions = mutableListOf<GameAction>()
         val template = shellTestState().missions.single()

@@ -276,6 +276,7 @@ data class MissionUiModel(
     val locked: Boolean = false,
     val isEndless: Boolean = false,
     val trainingAvailable: Boolean = false,
+    val trainingCompleted: Boolean = false,
 )
 
 data class CareerUiState(

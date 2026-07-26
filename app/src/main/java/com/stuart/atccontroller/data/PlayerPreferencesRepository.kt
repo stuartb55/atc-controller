@@ -325,7 +325,14 @@ class PlayerPreferencesRepository(
 
     suspend fun saveTrainingState(state: TrainingState) {
         require(state.schemaVersion == 1 && state.activeStep >= 0)
-        dataStore.edit { it[Keys.TRAINING_STATE] = TrainingStateCodec.encode(state) }
+        dataStore.edit { preferences ->
+            val persisted = TrainingStateCodec.decode(preferences[Keys.TRAINING_STATE])
+            preferences[Keys.TRAINING_STATE] = TrainingStateCodec.encode(
+                state.copy(
+                    completedLessonIds = persisted.completedLessonIds + state.completedLessonIds,
+                ),
+            )
+        }
     }
 
     suspend fun saveCompletedReplay(replay: CompletedReplayRecord) {
