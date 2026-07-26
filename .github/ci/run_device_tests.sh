@@ -2,7 +2,9 @@
 set -Eeuo pipefail
 
 api_level="${1:?Android API level is required}"
-artifact_dir=".github/ci-artifacts/device-api-${api_level}"
+font_scale="${2:-1.0}"
+configuration="${3:-standard}"
+artifact_dir=".github/ci-artifacts/device-${configuration}-api-${api_level}"
 package_name="com.stuart.atccontroller"
 mkdir -p "${artifact_dir}"
 
@@ -56,11 +58,19 @@ logcat_pid="$!"
 adb shell settings put global window_animation_scale 0
 adb shell settings put global transition_animation_scale 0
 adb shell settings put global animator_duration_scale 0
-adb shell settings put system font_scale 1.0
+adb shell settings put system font_scale "${font_scale}"
 adb shell settings put system accelerometer_rotation 0
 adb shell settings put system user_rotation 0
 adb shell wm size 1080x2400
 adb shell wm density 420
+configured_font_scale="$(adb shell settings get system font_scale | tr -d '\r')"
+printf '%s\n' "${configured_font_scale}" >"${artifact_dir}/configured-font-scale.txt"
+if [[ "${configured_font_scale}" != "${font_scale}" ]]; then
+  echo \
+    "Expected font scale ${font_scale}, found ${configured_font_scale}." \
+    >&2
+  exit 1
+fi
 device_locale="$(adb shell getprop persist.sys.locale | tr -d '\r')"
 if [[ -z "${device_locale}" ]]; then
   device_language="$(adb shell getprop persist.sys.language | tr -d '\r')"
@@ -78,7 +88,7 @@ set +e
   --no-daemon \
   --stacktrace \
   --dependency-verification=strict \
-  connectedDebugAndroidTest \
+  :app:connectedDebugAndroidTest \
   2>&1 | tee "${artifact_dir}/gradle-device-tests.log"
 gradle_status="${PIPESTATUS[0]}"
 set -e

@@ -109,7 +109,7 @@ class SupportingScreensTest {
     }
 
     @Test
-    fun customShiftExposesAllTrainingAssistsAndNamedCycleControls() {
+    fun customShiftExposesOnlyFunctionalTrainingAssistsAndNamedCycleControls() {
         composeRule.setContent {
             AtcControllerTheme {
                 Box(Modifier.size(width = 360.dp, height = 640.dp)) {
@@ -123,9 +123,13 @@ class SupportingScreensTest {
             .assertIsDisplayed()
             .assertHasClickAction()
         composeRule.onNode(hasScrollAction())
-            .performScrollToNode(hasContentDescription("Route snapping"))
-        composeRule.onNodeWithContentDescription("Route snapping")
+            .performScrollToNode(hasContentDescription("Approach setup"))
+        composeRule.onNodeWithContentDescription("Approach setup")
             .assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Conflict prediction")
+            .assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Route snapping")
+            .assertDoesNotExist()
     }
 }
 

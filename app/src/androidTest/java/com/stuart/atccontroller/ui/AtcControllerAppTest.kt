@@ -14,12 +14,14 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
@@ -73,7 +75,11 @@ class AtcControllerAppTest {
         }
 
         listOf("23R", "240/08", "20 km").forEach { value ->
-            val bounds = composeRule.onNodeWithText(value).fetchSemanticsNode().boundsInRoot
+            val bounds = composeRule.onNodeWithText(value)
+                .performScrollTo()
+                .assertIsDisplayed()
+                .fetchSemanticsNode()
+                .boundsInRoot
             assertTrue("Operational value wrapped vertically: $value at $bounds", bounds.width > bounds.height)
         }
     }
@@ -195,7 +201,7 @@ class AtcControllerAppTest {
         composeRule.onNodeWithText("CONTROL").assertIsSelected()
         composeRule.onNodeWithText("SET UP APPROACH").assertIsDisplayed()
         composeRule.onNodeWithText("CLEAR TO LAND").assertIsDisplayed()
-        composeRule.onNodeWithText("VECTOR CONTROLS").assertIsDisplayed()
+        composeRule.onNodeWithText("VECTOR CONTROLS").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("NAMED WAYPOINTS").assertDoesNotExist()
         composeRule.onNodeWithText("ROUTE").performClick().assertIsSelected()
         composeRule.onNodeWithText("NAMED WAYPOINTS").performScrollTo().assertIsDisplayed()
@@ -217,11 +223,17 @@ class AtcControllerAppTest {
         }
 
         composeRule.onNodeWithContentDescription("Music volume").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("RADAR & ACCESSIBILITY").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithText("LABEL SIZE").performScrollTo().assertIsDisplayed()
+        val settingsList = composeRule.onNode(hasScrollAction())
+        settingsList.performScrollToNode(hasText("RADAR & ACCESSIBILITY"))
+        composeRule.onNodeWithText("RADAR & ACCESSIBILITY").assertIsDisplayed()
+        settingsList.performScrollToNode(hasContentDescription("High contrast"))
         composeRule.onNodeWithContentDescription("High contrast").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Declutter labels").performScrollTo().assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Pause on focus loss").performScrollTo().assertIsDisplayed()
+        settingsList.performScrollToNode(hasContentDescription("Declutter labels"))
+        composeRule.onNodeWithContentDescription("Declutter labels").assertIsDisplayed()
+        settingsList.performScrollToNode(hasContentDescription("Pause on focus loss"))
+        composeRule.onNodeWithContentDescription("Pause on focus loss").assertIsDisplayed()
+        settingsList.performScrollToNode(hasText("LABEL SIZE"))
+        composeRule.onNodeWithText("LABEL SIZE").assertIsDisplayed()
     }
 
     @Test

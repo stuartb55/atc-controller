@@ -110,7 +110,7 @@ class LiveGameViewModelTest {
     }
 
     @Test
-    fun volumeMuteRestoresCustomLevelAndHiddenSettingsAreInteractive() {
+    fun volumeMuteRestoresCustomLevelAndSettingsRemainInteractive() {
         val persistence = FakeGamePersistence(
             PlayerData(
                 settings = PlayerSettings(
@@ -119,7 +119,6 @@ class LiveGameViewModelTest {
                     lastMusicVolume = .37f,
                     lastEffectsVolume = .58f,
                     labelDeclutteringEnabled = false,
-                    routeSnappingEnabled = false,
                     pauseOnFocusLoss = false,
                 ),
             ),
@@ -133,14 +132,12 @@ class LiveGameViewModelTest {
             viewModel.onAction(GameAction.ToggleMusicMute)
             viewModel.onAction(GameAction.SetEffectsVolume(.42f))
             viewModel.onAction(GameAction.ToggleLabelDecluttering)
-            viewModel.onAction(GameAction.ToggleRouteSnapping)
             viewModel.onAction(GameAction.TogglePauseOnFocusLoss)
         }
 
         assertEquals(.37f, viewModel.uiState.settings.musicVolume, 0.001f)
         assertEquals(.42f, viewModel.uiState.settings.effectsVolume, 0.001f)
         assertTrue(viewModel.uiState.settings.labelDeclutteringEnabled)
-        assertTrue(viewModel.uiState.settings.routeSnappingEnabled)
         assertTrue(viewModel.uiState.settings.pauseOnFocusLoss)
         waitUntil {
             persistence.data.value.settings.musicVolume == .37f &&
@@ -568,7 +565,7 @@ class LiveGameViewModelTest {
             first.onAction(GameAction.ToggleCustomApproachSetup)
             first.onAction(GameAction.StartCustomShift)
         }
-        waitUntil { persistence.data.value.activeSession?.payload?.contains("D|C|ATC1.") == true }
+        waitUntil { persistence.data.value.activeSession?.payload?.contains("D|C|ATC3.") == true }
         val originalIdentity = first.uiState.configurationIdentity
 
         val recreatedPersistence = FakeGamePersistence(persistence.data.value)

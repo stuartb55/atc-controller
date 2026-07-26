@@ -1,6 +1,7 @@
 package com.stuart.atccontroller.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,8 +17,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.stuart.atccontroller.R
@@ -100,22 +105,40 @@ private fun VectorTargetSlider(
                 color = colors.green,
             )
         }
-        Slider(
-            value = pendingValue,
-            onValueChange = {
-                pendingValue = snapVectorTarget(it, valueRange, interval)
-            },
-            onValueChangeFinished = { onCommit(pendingValue) },
-            valueRange = valueRange,
-            steps = sliderSteps(valueRange, interval),
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
                 .semantics {
                     contentDescription = label
                     stateDescription = pendingValueText
+                    progressBarRangeInfo = ProgressBarRangeInfo(
+                        current = pendingValue,
+                        range = valueRange,
+                        steps = sliderSteps(valueRange, interval),
+                    )
+                    setProgress { requestedValue ->
+                        val nextValue = snapVectorTarget(requestedValue, valueRange, interval)
+                        pendingValue = nextValue
+                        onCommit(nextValue)
+                        true
+                    }
                 },
-        )
+        ) {
+            Slider(
+                value = pendingValue,
+                onValueChange = {
+                    pendingValue = snapVectorTarget(it, valueRange, interval)
+                },
+                onValueChangeFinished = { onCommit(pendingValue) },
+                valueRange = valueRange,
+                steps = sliderSteps(valueRange, interval),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.Center)
+                    .clearAndSetSemantics { },
+            )
+        }
     }
 }
 

@@ -180,14 +180,23 @@ jobs:
           retention-days: 14
 
   device-tests:
-    name: Device tests (API ${{ matrix.api-level }})
+    name: Device tests (${{ matrix.configuration }}, API ${{ matrix.api-level }})
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
-        api-level: [26, 36]
+        include:
+          - configuration: min-sdk
+            api-level: 26
+            font-scale: "1.0"
+          - configuration: current-api
+            api-level: 36
+            font-scale: "1.0"
+          - configuration: large-text
+            api-level: 36
+            font-scale: "2.0"
 
     steps:
       - name: Check out repository
@@ -219,6 +228,8 @@ jobs:
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         env:
           CI_DEVICE_API: ${{ matrix.api-level }}
+          CI_DEVICE_CONFIGURATION: ${{ matrix.configuration }}
+          CI_FONT_SCALE: ${{ matrix.font-scale }}
         with:
           api-level: ${{ matrix.api-level }}
           target: google_apis
@@ -229,21 +240,23 @@ jobs:
           emulator-options: >-
             -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
             -no-snapshot -memory 4096 -camera-back none -timezone UTC
-          script: bash .github/ci/run_device_tests.sh "${CI_DEVICE_API}"
+          script: >-
+            bash .github/ci/run_device_tests.sh
+            "${CI_DEVICE_API}" "${CI_FONT_SCALE}" "${CI_DEVICE_CONFIGURATION}"
 
       - name: Capture runner-level emulator diagnostics
         if: always()
         run: >-
           bash .github/ci/capture_runner_diagnostics.sh
-          ".github/ci-artifacts/device-api-${{ matrix.api-level }}/runner"
+          ".github/ci-artifacts/device-${{ matrix.configuration }}-api-${{ matrix.api-level }}/runner"
 
       - name: Upload device test reports and diagnostics
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: device-api-${{ matrix.api-level }}-${{ github.sha }}
+          name: device-${{ matrix.configuration }}-api-${{ matrix.api-level }}-${{ github.sha }}
           path: |
-            .github/ci-artifacts/device-api-${{ matrix.api-level }}/**
+            .github/ci-artifacts/device-${{ matrix.configuration }}-api-${{ matrix.api-level }}/**
             app/build/outputs/androidTest-results/**
             app/build/reports/androidTests/**
             app/build/outputs/connected_android_test_additional_output/**
