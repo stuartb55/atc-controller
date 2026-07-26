@@ -120,7 +120,7 @@ kotlin {
     jvmToolchain(21)
 }
 
-val validateReleaseBundle by tasks.registering {
+val validateReleaseBundle = tasks.register("validateReleaseBundle") {
     group = "verification"
     description = "Prevents unsigned or non-CI release bundles from being produced."
     notCompatibleWithConfigurationCache(
