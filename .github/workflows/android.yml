@@ -36,7 +36,7 @@ jobs:
         run: ./gradlew --no-daemon test assembleDebug
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: manchester-approach-debug-${{ github.run_number }}
           path: app/build/outputs/apk/debug/*.apk
