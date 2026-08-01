@@ -28,6 +28,15 @@ Run `./gradlew test` for JVM tests, `./gradlew assembleDebug` for an installable
 Release builds use code and resource shrinking. Local release APKs remain unsigned; signed Play
 bundles are gated by the secret-safe CI process in [RELEASING.md](RELEASING.md).
 
+## Language support
+
+The 1.0 release is intentionally English-only. Right-to-left mirroring is disabled until the
+aviation-specific layouts and fixed-direction data such as headings, callsigns, and runway
+identifiers have completed native-speaker and assistive-technology review. Player-facing UI text
+in the application shell and presentation layer is kept in Android string resources; authored
+English mission content remains versioned game data. Additional locales can therefore be added
+without changing gameplay or persistence formats.
+
 ## Aviation data
 
 The Manchester layout and named fixes are informed by the UK AIP snapshot dated 16 April 2026. Harbour Approach is an original crossing-runway layout. The in-app game-use notice is available in Settings.

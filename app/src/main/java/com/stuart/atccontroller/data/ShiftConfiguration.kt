@@ -17,7 +17,6 @@ enum class WeatherPreset { CALM, WINDY, LOW_VISIBILITY }
 enum class FuelPressure(val multiplier: Double) { RELAXED(1.25), STANDARD(1.0), TIGHT(.72) }
 
 data class ShiftAssists(
-    val routeSnapping: Boolean = true,
     val approachSetup: Boolean = true,
     val conflictPrediction: Boolean = true,
 )
@@ -74,12 +73,14 @@ data class ShiftConfiguration(
 }
 
 object ShiftConfigurationCodec {
-    private const val LEGACY_PREFIX = "ATC1"
-    private const val NAMESPACED_PREFIX = "ATC2"
+    private const val LEGACY_DEFAULT_PACK_PREFIX = "ATC1"
+    private const val LEGACY_NAMESPACED_PREFIX = "ATC2"
+    private const val DEFAULT_PACK_PREFIX = "ATC3"
+    private const val NAMESPACED_PREFIX = "ATC4"
     private const val MAX_CODE_LENGTH = 512
 
     fun encode(configuration: ShiftConfiguration): String {
-        val legacyFields = listOf(
+        val configurationFields = listOf(
             configuration.generatorVersion,
             configuration.seed,
             configuration.density.name,
@@ -88,17 +89,16 @@ object ShiftConfigurationCodec {
             configuration.weatherPreset.name,
             configuration.fuelPressure.name,
             configuration.strikeLimit,
-            if (configuration.assists.routeSnapping) 1 else 0,
             if (configuration.assists.approachSetup) 1 else 0,
             if (configuration.assists.conflictPrediction) 1 else 0,
             configuration.rankedPresetId.orEmpty(),
         )
         val namespaced = configuration.contentPackId != ContentRegistry.DEFAULT_PACK_ID
-        val prefix = if (namespaced) NAMESPACED_PREFIX else LEGACY_PREFIX
+        val prefix = if (namespaced) NAMESPACED_PREFIX else DEFAULT_PACK_PREFIX
         val payload = (if (namespaced) {
-            listOf(configuration.contentPackId) + legacyFields
+            listOf(configuration.contentPackId) + configurationFields
         } else {
-            legacyFields
+            configurationFields
         }).joinToString("|")
         val encoded = Base64.getUrlEncoder().withoutPadding()
             .encodeToString(payload.toByteArray(StandardCharsets.UTF_8))
@@ -111,18 +111,42 @@ object ShiftConfigurationCodec {
         }
         return runCatching {
             val codeParts = encoded.split('.')
-            require(codeParts.size == 3 && codeParts[0] in setOf(LEGACY_PREFIX, NAMESPACED_PREFIX))
+            require(
+                codeParts.size == 3 &&
+                    codeParts[0] in setOf(
+                        LEGACY_DEFAULT_PACK_PREFIX,
+                        LEGACY_NAMESPACED_PREFIX,
+                        DEFAULT_PACK_PREFIX,
+                        NAMESPACED_PREFIX,
+                    ),
+            )
             require(codeParts[2] == checksum(codeParts[1]))
             val payload = String(
                 Base64.getUrlDecoder().decode(codeParts[1]),
                 StandardCharsets.UTF_8,
             )
             val parts = payload.split('|')
-            val namespaced = codeParts[0] == NAMESPACED_PREFIX
-            require(parts.size == if (namespaced) 13 else 12)
+            val isLegacy = codeParts[0] in setOf(
+                LEGACY_DEFAULT_PACK_PREFIX,
+                LEGACY_NAMESPACED_PREFIX,
+            )
+            val namespaced = codeParts[0] in setOf(LEGACY_NAMESPACED_PREFIX, NAMESPACED_PREFIX)
+            val expectedFieldCount = when {
+                isLegacy && namespaced -> 13
+                isLegacy -> 12
+                namespaced -> 12
+                else -> 11
+            }
+            require(parts.size == expectedFieldCount)
             val offset = if (namespaced) 1 else 0
             val contentPackId = if (namespaced) parts[0] else ContentRegistry.DEFAULT_PACK_ID
             require(ContentRegistry.pack(contentPackId) != null)
+            val assistOffset = offset + if (isLegacy) 9 else 8
+            if (isLegacy) {
+                // ATC1/ATC2 stored the retired route-snapping flag at this position. Validate
+                // the legacy schema but deliberately ignore the value during migration.
+                parts[offset + 8].toStrictFlag()
+            }
             ShiftConfiguration(
                 generatorVersion = parts[offset].toInt(),
                 contentPackId = contentPackId,
@@ -134,11 +158,10 @@ object ShiftConfigurationCodec {
                 fuelPressure = FuelPressure.valueOf(parts[offset + 6]),
                 strikeLimit = parts[offset + 7].toInt(),
                 assists = ShiftAssists(
-                    routeSnapping = parts[offset + 8].toStrictFlag(),
-                    approachSetup = parts[offset + 9].toStrictFlag(),
-                    conflictPrediction = parts[offset + 10].toStrictFlag(),
+                    approachSetup = parts[assistOffset].toStrictFlag(),
+                    conflictPrediction = parts[assistOffset + 1].toStrictFlag(),
                 ),
-                rankedPresetId = parts[offset + 11].takeIf(String::isNotBlank),
+                rankedPresetId = parts[assistOffset + 2].takeIf(String::isNotBlank),
             )
         }.getOrNull()
     }

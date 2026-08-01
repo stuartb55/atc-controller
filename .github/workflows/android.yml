@@ -1,44 +1,335 @@
-name: Android build
+name: Android CI
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_performance:
+        description: Run the scheduled performance suite
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: android-${{ github.workflow }}-${{ github.ref }}
+  group: android-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Test and build debug APK
+  unit-tests:
+    name: JVM unit tests
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Verify CI supply-chain policy
+        run: |
+          python3 -m unittest discover -s .github/ci/tests -p "test_*.py"
+          python3 .github/ci/verify_ci_policy.py
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
           java-version: "21"
+          check-latest: false
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
-      - name: Test and build
-        run: ./gradlew --no-daemon test assembleDebug
+      - name: Run JVM unit tests
+        run: ./gradlew --no-daemon --stacktrace --dependency-verification=strict testDebugUnitTest
+
+      - name: Upload JVM test reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: jvm-test-reports-${{ github.sha }}
+          path: |
+            app/build/reports/tests/testDebugUnitTest/**
+            app/build/test-results/testDebugUnitTest/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  lint:
+    name: Android lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          check-latest: false
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Run Android lint
+        run: ./gradlew --no-daemon --stacktrace --dependency-verification=strict lintDebug
+
+      - name: Upload lint reports
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: lint-reports-${{ github.sha }}
+          path: app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+          retention-days: 14
+
+  debug-build:
+    name: Debug APK
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          check-latest: false
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon --stacktrace --dependency-verification=strict assembleDebug
 
       - name: Upload debug APK
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: manchester-approach-debug-${{ github.run_number }}
+          name: debug-apk-${{ github.sha }}
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+  release-build:
+    name: Shrunk release APK
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          check-latest: false
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Assemble minified, resource-shrunk release APK
+        run: ./gradlew --no-daemon --stacktrace --dependency-verification=strict assembleRelease
+
+      - name: Upload release APK and shrinker diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-build-${{ github.sha }}
+          path: |
+            app/build/outputs/apk/release/**
+            app/build/outputs/mapping/release/**
+            app/build/outputs/logs/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  device-tests:
+    name: Device tests (${{ matrix.configuration }}, API ${{ matrix.api-level }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: min-sdk
+            api-level: 26
+            font-scale: "1.0"
+          - configuration: current-api
+            api-level: 36
+            font-scale: "1.0"
+          - configuration: large-text
+            api-level: 36
+            font-scale: "2.0"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          check-latest: false
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the complete instrumentation suite
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        env:
+          CI_DEVICE_API: ${{ matrix.api-level }}
+          CI_DEVICE_CONFIGURATION: ${{ matrix.configuration }}
+          CI_FONT_SCALE: ${{ matrix.font-scale }}
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+            -no-snapshot -memory 4096 -camera-back none -timezone UTC
+          script: >-
+            bash .github/ci/run_device_tests.sh
+            "${CI_DEVICE_API}" "${CI_FONT_SCALE}" "${CI_DEVICE_CONFIGURATION}"
+
+      - name: Capture runner-level emulator diagnostics
+        if: always()
+        run: >-
+          bash .github/ci/capture_runner_diagnostics.sh
+          ".github/ci-artifacts/device-${{ matrix.configuration }}-api-${{ matrix.api-level }}/runner"
+
+      - name: Upload device test reports and diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: device-${{ matrix.configuration }}-api-${{ matrix.api-level }}-${{ github.sha }}
+          path: |
+            .github/ci-artifacts/device-${{ matrix.configuration }}-api-${{ matrix.api-level }}/**
+            app/build/outputs/androidTest-results/**
+            app/build/reports/androidTests/**
+            app/build/outputs/connected_android_test_additional_output/**
+            app/build/outputs/managed_device_android_test_additional_output/**
+            app/build/outputs/apk/debug/**
+            app/build/outputs/apk/androidTest/debug/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  scheduled-performance:
+    name: Scheduled performance trace
+    if: github.event_name == 'schedule' || inputs.run_performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          check-latest: false
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6.2.0
+        with:
+          cache-provider: basic
+          cache-read-only: true
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run current-device Macrobenchmark suite
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-boot-timeout: 900
+          disable-animations: true
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+            -no-snapshot -memory 4096 -camera-back none -timezone UTC
+          script: bash .github/ci/run_performance_trace.sh
+
+      - name: Capture runner-level emulator diagnostics
+        if: always()
+        run: >-
+          bash .github/ci/capture_runner_diagnostics.sh
+          ".github/ci-artifacts/performance/runner"
+
+      - name: Upload benchmark results and traces
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: scheduled-performance-${{ github.sha }}
+          path: |
+            .github/ci-artifacts/performance/**
+            benchmark/build/outputs/androidTest-results/**
+            benchmark/build/reports/androidTests/**
+            benchmark/build/outputs/connected_android_test_additional_output/**
+            benchmark/build/outputs/managed_device_android_test_additional_output/**
+            benchmark/build/outputs/apk/**
+            app/build/outputs/apk/benchmark/**
+          if-no-files-found: warn
+          retention-days: 30

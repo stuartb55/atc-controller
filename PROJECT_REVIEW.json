@@ -1,0 +1,899 @@
+{
+  "schema_version": "1.0.0",
+  "artifact_type": "android_game_project_review",
+  "generated_on": "2026-07-26",
+  "project": {
+    "name": "ATC Controller",
+    "workspace": "C:/Users/stuar/IdeaProjects/atc-controller",
+    "application_id": "com.stuart.atccontroller",
+    "platform": "Android",
+    "implementation_languages": [
+      "Kotlin"
+    ],
+    "android_sdk": {
+      "min": 26,
+      "target": 37,
+      "compile": 37
+    }
+  },
+  "review_scope": {
+    "status": "complete_static_review_with_device_verification_gap",
+    "included": [
+      "All 26 Kotlin production files under app/src/main/java",
+      "All JVM and Android instrumentation test sources",
+      "Compose UI, accessibility semantics, layouts, navigation, and gameplay controls",
+      "Simulation, mission, training, progression, replay, and persistence logic",
+      "Manifest, backup policy, resources, Gradle configuration, dependency catalog, release signing, shrinking, and CI workflow",
+      "Lifecycle, coroutine, audio, haptic, memory-allocation, dependency-injection, and security behavior"
+    ],
+    "not_applicable": [
+      "There are no Java production implementations; Java compile tasks report NO-SOURCE.",
+      "There is no backend, HTTP client, WebView, database, authentication, or other full-stack integration to review. The app has no INTERNET permission and only exposes an Android share intent for user-initiated shift codes."
+    ],
+    "limitations": [
+      "No reliable on-device performance trace or manual TalkBack session was obtained because the local instrumentation process terminated before test discovery and the headless emulator was no longer available for the diagnostic rerun.",
+      "Performance findings are therefore based on verified call frequency and allocation structure, and must be quantified with the benchmarks required below."
+    ],
+    "working_tree_policy": "The review used the current working tree, including pre-existing user edits. No existing source change was modified or discarded; this JSON file is the only review artifact added."
+  },
+  "verification": [
+    {
+      "id": "VERIFY-UNIT-LINT",
+      "command": ".\\gradlew.bat testDebugUnitTest lintDebug --console=plain",
+      "result": "passed",
+      "details": {
+        "jvm_tests": 132,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "lint": "No issues found",
+        "build": "BUILD SUCCESSFUL"
+      }
+    },
+    {
+      "id": "VERIFY-INSTRUMENTATION",
+      "command": "$env:ANDROID_SERIAL='emulator-5554'; .\\gradlew.bat connectedDebugAndroidTest",
+      "result": "infrastructure_failure",
+      "details": {
+        "instrumentation_test_annotations_in_repository": 44,
+        "tests_discovered": 0,
+        "runner_message": "Process crashed",
+        "interpretation": "This does not establish an application crash because no test started and the emulator subsequently disappeared. It does establish that the device suite is not currently a usable release signal."
+      }
+    }
+  ],
+  "executive_assessment": {
+    "release_readiness": "not_ready",
+    "release_blocking_reasons": [
+      "The high-frequency simulation-to-Compose path has no performance budget or benchmark and performs substantial main-thread allocation.",
+      "Several progression, replay, training, and settings writes can fail without a durable retry or accurate player-facing state.",
+      "The 44-test instrumentation suite did not execute locally and is absent from CI."
+    ],
+    "architecture": {
+      "rating": "sound_domain_core_overloaded_presentation_orchestration",
+      "summary": "The package boundaries are sensible and the deterministic simulation is Android-free, but LiveGameViewModel has become a presentation, persistence, replay, progression, navigation, localization, and simulation scheduler monolith. Production dependencies are manually constructed inside the ViewModel instead of at an application composition root."
+    },
+    "memory_and_lifecycle": {
+      "rating": "resource_safe_but_allocation_heavy",
+      "summary": "No obvious Activity, Context, audio, or executor leak was found. GameFeedback retains the application context and closes its audio resources and executor; MainActivity removes delayed callbacks, pauses/checkpoints on host stop, and excludes configuration changes. The primary risk is transient allocation and broad recomposition every simulation tick, plus large replay strings in Preferences DataStore."
+    },
+    "gameplay": {
+      "rating": "feature_rich_and_teachable_with_control_and_scaling_gaps",
+      "summary": "The game has a strong engagement foundation: authored campaigns, guided training, objectives, stars, daily/custom shifts, endless progression, deterministic replays, explicit conflicts, event feedback, and pause/recovery. The largest player-facing risks are command tap workload, large-font layout constraints, a non-functional route-snapping option, and stale runway wind during dynamic weather."
+    },
+    "security": {
+      "rating": "good_runtime_attack_surface_with_ci_supply_chain_gap",
+      "summary": "Runtime exposure is deliberately small: no network permission, one exported launcher Activity, no embedded credentials, cloud backup is excluded, and release signing comes from environment providers. Build provenance is weaker because dependency verification is inactive and GitHub Actions use mutable version tags."
+    },
+    "strengths": [
+      "The simulation uses deterministic fixed steps, typed commands and events, bounded histories, and an Android-independent domain model.",
+      "Mission validation and automated tests cover authored content, persistence codecs, mission completion, progression, restoration, and engine behavior.",
+      "Process-death restoration uses bounded typed-command replay and rejects malformed or incompatible payloads.",
+      "Compose already supplies many 48 dp targets, live regions, custom accessibility actions, high-contrast and reduced-motion settings, label scaling, and compact/stacked layouts.",
+      "Mission timeout, completion, command rejection, conflict, abandonment, replay, and progression states are explicitly represented to the player.",
+      "Release builds enable code minification and resource shrinking, and publishing signing secrets are not stored in the repository."
+    ]
+  },
+  "priority_definition": {
+    "P0": "Confirmed data loss, security compromise, or inability to build/start the application; fix immediately.",
+    "P1": "Release blocker or high-risk architecture, performance, persistence, verification, or supply-chain issue; fix before production release.",
+    "P2": "Material gameplay, accessibility, correctness, or maintainability issue; schedule for the next product milestone.",
+    "P3": "Minor maintainability, localization, or cleanup item; address after higher priorities."
+  },
+  "prioritized_remediation": [
+    {
+      "rank": 1,
+      "id": "ATC-REV-001",
+      "priority": "P1",
+      "category": "architecture_performance_memory",
+      "confidence": "medium_until_benchmarked",
+      "title": "Remove full-state simulation and presentation work from the main-thread 10 Hz hot path",
+      "problem": "The ViewModel advances or replays the engine every 100 ms on its main-thread scope. Each update deep-copies aircraft and copies the 200-event history, remaps aircraft, runways, conflicts, objectives, event feed, dynamic events, and flight strips, repeatedly scans collections, then replaces one broad Compose state object. Radar label and hit-region caches are invalidated whenever the newly allocated aircraft list changes.",
+      "impact": [
+        "Frame stalls and input latency as traffic, trails, conflicts, and event history grow.",
+        "High temporary allocation and garbage-collection pressure on common low-memory API 26 devices.",
+        "Battery work continues at a fixed polling cadence even when no active engine or replay needs advancement."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 171,
+          "line_end": 178,
+          "observation": "The class documentation explicitly says the engine is advanced on a single main-thread coroutine at 10 Hz."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 260,
+          "line_end": 278,
+          "observation": "An always-running while(isActive) loop wakes every TICK_MILLIS; TICK_MILLIS is 100 ms at line 3000."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/simulation/AtcSimulationEngine.kt",
+          "line_start": 2347,
+          "line_end": 2364,
+          "observation": "Every snapshot deep-copies every aircraft and copies conflicts, events, event history, and upcoming traffic."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1323,
+          "line_end": 1468,
+          "observation": "publish rebuilds nearly every gameplay UI collection on each snapshot; flight-strip construction performs repeated linear lookups."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2479,
+          "line_end": 2507,
+          "observation": "Each aircraft scans the complete conflict list to derive its conflict level."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/RadarGameScreen.kt",
+          "line_start": 819,
+          "line_end": 878,
+          "observation": "Label layout and hit regions are remembered using the newly allocated aircraft collection as a key."
+        }
+      ],
+      "instructions": [
+        "Move deterministic engine stepping and replay reconstruction to one dedicated background dispatcher or actor. Serialize player commands through that owner so off-main execution does not introduce races or nondeterminism.",
+        "Stop the clock coroutine when there is no active session or playing replay; restart it from explicit session lifecycle state instead of polling an empty engine.",
+        "Separate simulation snapshots from presentation frames. Keep static airport/runway/fix data outside the tick frame and deliver bounded event deltas instead of copying the complete event history every tick.",
+        "Pre-index aircraft, conflicts, and wake-spacing records by aircraft ID once per frame. Eliminate first and firstOrNull scans inside per-aircraft mapping.",
+        "Expose immutable, stable StateFlow slices for radar geometry, command selection, objectives, event feed, and settings. Collect them with lifecycle awareness at the narrowest composable that consumes each slice.",
+        "Keep simulation correctness at 10 Hz, but publish only changed presentation slices and interpolate purely visual movement where appropriate.",
+        "Add Macrobenchmark and Compose tracing for a deterministic maximum-traffic scenario at 1x and 2x speed on minSdk-class and current reference devices."
+      ],
+      "acceptance_criteria": [
+        "A system trace proves that engine step, snapshot construction, replay reconstruction, and payload serialization do not run on the main thread.",
+        "No tick copies the complete retained event history into the UI; the event feed consumes bounded deltas or an independently updated slice.",
+        "Collection mapping is O(aircraft + conflicts + wakeRecords), with lookup maps created once per frame.",
+        "A checked-in benchmark reports frame-time, jank, and allocation baselines for the busiest deterministic scenario and fails CI on an agreed regression threshold.",
+        "The benchmark sustains the application's selected refresh behavior without visible command-input delay or repeated garbage-collection stalls."
+      ],
+      "validation": [
+        "Run all deterministic engine tests after moving thread ownership.",
+        "Add a race test that submits commands while the clock advances and proves command ordering is stable.",
+        "Run Macrobenchmark in profileable release configuration and capture Perfetto traces at 1x and 2x."
+      ],
+      "automation_tags": [
+        "release-blocker",
+        "performance",
+        "memory",
+        "main-thread",
+        "compose"
+      ]
+    },
+    {
+      "rank": 2,
+      "id": "ATC-REV-002",
+      "priority": "P1",
+      "category": "persistence_gameplay_correctness",
+      "confidence": "high",
+      "title": "Make every player-progress write observable, ordered, retryable, and idempotent",
+      "problem": "Several writes are launched without exception handling, while daily and custom result failures are silently swallowed. Endless milestone UI is advanced before the milestone write succeeds. A storage or cancellation failure can therefore leave the result screen, in-memory progression, active-session record, and durable player data disagreeing.",
+      "impact": [
+        "Training completion, endless continuation, completed replays, or settings can be lost without explanation.",
+        "Daily/custom results can appear complete even when their record was not saved.",
+        "An endless player can be offered the next stage even though the recoverable milestone was never committed."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1119,
+          "line_end": 1130,
+          "observation": "Training writes are sequenced by Job.join but exceptions are not mapped to UI state or a retry."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1662,
+          "line_end": 1669,
+          "observation": "The endless milestone is shown as continuable and the UI is persisted before saveEndlessMilestone completes."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1766,
+          "line_end": 1793,
+          "observation": "Daily and practice-result writes use runCatching without inspecting or exposing failure."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1813,
+          "line_end": 1826,
+          "observation": "Completed replay persistence is launched without error handling."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2013,
+          "line_end": 2026,
+          "observation": "ContinueEndlessRun mutates in-memory state, then saves and starts the next scenario without a failure state."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2282,
+          "line_end": 2287,
+          "observation": "Settings are updated optimistically and the DataStore write is fire-and-forget."
+        }
+      ],
+      "instructions": [
+        "Introduce a PersistenceCoordinator that serializes writes and returns a typed result containing operation ID, durable state, and recoverability. Do not scatter bare viewModelScope persistence launches.",
+        "Assign stable attempt/result IDs before terminal handling and use them for idempotent mission, daily, custom, endless, and replay writes.",
+        "Represent SAVING, SAVED, FAILED_RETRYABLE, and FAILED_PERMANENT for every durable result, not only authored progression.",
+        "For endless milestones, keep Continue and Cash out disabled while saving. Expose the action only after the milestone transaction commits; on failure retain the prior recoverable session and show Retry.",
+        "For training and settings, retain the latest desired state and retry with bounded backoff while the ViewModel is alive; surface persistent failure without rolling the displayed value back unexpectedly.",
+        "Log failures without serializing replay payloads, player identifiers, or other large state into logs."
+      ],
+      "acceptance_criteria": [
+        "Injected I/O failures cannot produce a success or continue affordance until the associated durable write succeeds.",
+        "Every failed terminal-result write has a visible retry action and retrying the same operation is idempotent.",
+        "A process restart after each injected failure restores the last fully committed state and never duplicates a score, completion, daily attempt, or endless payout.",
+        "No persistence coroutine discards a Result or leaves an uncaught exception."
+      ],
+      "validation": [
+        "Add failure-injection tests for training completion, authored progression, daily result, custom result, endless milestone, replay save, and settings save.",
+        "Add process-recreation tests at pre-commit, failed, retrying, and committed points.",
+        "Run testDebugUnitTest and the device lifecycle suite."
+      ],
+      "automation_tags": [
+        "release-blocker",
+        "data-integrity",
+        "progression",
+        "coroutines"
+      ]
+    },
+    {
+      "rank": 3,
+      "id": "ATC-REV-003",
+      "priority": "P1",
+      "category": "persistence_storage_performance",
+      "confidence": "high",
+      "title": "Move replay payloads out of Preferences DataStore and unify payload limits",
+      "problem": "The ViewModel accepts completed replay payloads up to 500000 characters, but the repository rejects anything over 250000. Up to five payloads are Base64-encoded into one Preferences DataStore string, causing large decode and full-file rewrite costs whenever any player preference changes.",
+      "impact": [
+        "Payloads between 250001 and 500000 characters pass the caller guard and then fail asynchronously.",
+        "Five maximum-size payloads can expand to roughly 1.67 MB before metadata, increasing settings-write latency and corruption blast radius.",
+        "Reading PlayerData decodes all completed replay payloads even on screens that need only settings or progression."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1799,
+          "line_end": 1826,
+          "observation": "Completed replay save checks MAX_SESSION_PAYLOAD_CHARS, which is 500000 at line 3013."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/data/PlayerPreferencesRepository.kt",
+          "line_start": 338,
+          "line_end": 347,
+          "observation": "The repository requires a maximum of 250000 characters."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/data/PlayerPreferencesRepository.kt",
+          "line_start": 431,
+          "line_end": 457,
+          "observation": "Every PlayerData decode includes the completed replay collection."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/data/PlayerPreferencesRepository.kt",
+          "line_start": 708,
+          "line_end": 742,
+          "observation": "CompletedReplayCodec Base64-encodes payloads and stores up to five records in a single preference value."
+        }
+      ],
+      "instructions": [
+        "Store each replay payload as a separate app-private file or database blob using an atomic temporary-write plus rename. Keep only bounded replay metadata and file IDs in DataStore.",
+        "Define one shared ReplayPolicy for maximum encoded bytes, command count, replay count, schema range, and retention. Enforce it before launching a write and again at the storage boundary.",
+        "Do not truncate an encoded replay. Reject oversize recordings explicitly, retain the terminal result, and tell the player that the replay could not be saved.",
+        "Load replay payloads lazily only when the player opens or shares a replay. Stream decode where practical.",
+        "Document whether replays participate in device-to-device transfer; keep cloud backup excluded unless the privacy policy changes.",
+        "Debounce continuous slider settings and commit once on value-change completion so large preference transactions are not triggered for every drag event while migration is pending."
+      ],
+      "acceptance_criteria": [
+        "The caller and repository use the same size and count policy.",
+        "Changing volume or label scale does not read, decode, or rewrite replay payload bytes.",
+        "A failed or interrupted replay write leaves either the previous valid file or no referenced file; no metadata points to a partial payload.",
+        "Startup and settings screens do not deserialize full replay command logs.",
+        "Boundary tests cover limit-1, limit, limit+1, five-record retention, interrupted write, corrupt file, and orphan cleanup."
+      ],
+      "validation": [
+        "Add storage migration tests from completed_replays_v1.",
+        "Measure cold PlayerData load and settings-write latency with five maximum-size legacy replays.",
+        "Verify backup and device-transfer behavior on API 26 and API 31+."
+      ],
+      "automation_tags": [
+        "release-blocker",
+        "datastore",
+        "replay",
+        "storage",
+        "performance"
+      ]
+    },
+    {
+      "rank": 4,
+      "id": "ATC-REV-004",
+      "priority": "P1",
+      "category": "architecture_dependency_injection",
+      "confidence": "high",
+      "title": "Decompose the ViewModel into testable session, persistence, replay, progression, and presentation components",
+      "problem": "LiveGameViewModel is approximately 3900 lines and owns navigation, Android Resources localization, settings, simulation scheduling, session reconstruction, replay serialization/parsing, training, progression, endless/daily/custom orchestration, feedback, and UI mapping. Its production constructor creates the repository directly. AtcSimulationEngine is also approximately 2500 lines and combines many mechanics in one state machine.",
+      "impact": [
+        "A change to one mode or persistence rule can regress unrelated navigation, lifecycle, or mission behavior.",
+        "Android Resources dependencies prevent most presentation mapping from being exercised as fast pure JVM tests.",
+        "Manual construction inside the ViewModel obscures dependency lifetime and makes production configuration harder to replace."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 171,
+          "line_end": 198,
+          "observation": "The ViewModel is the production adapter for content, simulation, and UI and directly constructs PlayerPreferencesRepository."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 260,
+          "line_end": 3013,
+          "observation": "One class contains clocking, actions, mapping, checkpointing, result handling, restoration, replay parsing, and constants."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/simulation/AtcSimulationEngine.kt",
+          "line_start": 1,
+          "line_end": 2493,
+          "observation": "One engine owns aircraft motion, approaches, runways, weather, conflicts, wake, handoff, scoring, spawning, dynamic events, and snapshot creation."
+        }
+      ],
+      "instructions": [
+        "Create an application-level composition root or ViewModel factory that injects GamePersistence, a clock, dispatchers, content registry, string resolver, feedback port, and session/replay services. Hilt is optional; explicit constructor injection is sufficient.",
+        "Extract SessionController for engine ownership and commands, SessionCheckpointStore for active-session durability, ReplayRepository plus ReplayCodec, ProgressionCoordinator, TrainingCoordinator, and GameUiMapper.",
+        "Keep Android Resources behind a StringResolver or presentation resource-token layer; domain and orchestration services must remain Android-free.",
+        "Split engine mechanics behind internal deterministic collaborators only where state ownership remains clear: traffic/motion, runway/approach, separation/wake, dynamic events/weather, and scoring/objectives.",
+        "Replace the broad mutable Compose property with a reducer-fed immutable StateFlow and explicit one-shot effects. Keep navigation state and durable game state distinct.",
+        "Split RadarGameScreen and MenuScreens into feature-focused files after state ownership is separated; do not perform a cosmetic file split that leaves the same coupling."
+      ],
+      "acceptance_criteria": [
+        "LiveGameViewModel no longer owns engine stepping, replay codec details, durable-write ordering, and Android string formatting simultaneously.",
+        "All production dependencies and coroutine dispatchers are supplied by a composition root and can be replaced in JVM tests.",
+        "Session, replay, progression, and training transitions have pure unit tests that require neither an Activity nor Android Resources.",
+        "The simulation module remains free of Android and Compose imports, and the UI never mutates engine state directly."
+      ],
+      "validation": [
+        "Add architecture tests that reject Android or Compose dependencies in simulation and orchestration packages.",
+        "Run existing deterministic restore and mission tests after each extraction.",
+        "Use coroutine-test dispatchers to prove cancellation and ordering on ViewModel clear."
+      ],
+      "automation_tags": [
+        "release-blocker",
+        "architecture",
+        "dependency-injection",
+        "state-management"
+      ]
+    },
+    {
+      "rank": 5,
+      "id": "ATC-REV-005",
+      "priority": "P1",
+      "category": "verification_ci_lifecycle",
+      "confidence": "high",
+      "title": "Make lint, device tests, lifecycle flows, and the shrunken release build mandatory CI gates",
+      "problem": "The CI workflow runs only unit tests and a debug assembly. It does not run lint, the 44 Android/Compose tests, a minSdk device, or a release shrink build. The local connected test attempt installed artifacts but the runner terminated before discovering tests, leaving critical UI and lifecycle behavior unverified.",
+      "impact": [
+        "Compose semantics, navigation, rotation, process recreation, touch interaction, and resource behavior can regress while CI remains green.",
+        "R8/resource-shrinker failures and release-only missing classes are discovered late.",
+        "The current device suite provides no trustworthy pass/fail signal."
+      ],
+      "evidence": [
+        {
+          "file": ".github/workflows/android.yml",
+          "line_start": 18,
+          "line_end": 41,
+          "observation": "The only build command is ./gradlew --no-daemon test assembleDebug."
+        },
+        {
+          "source": "local_verification",
+          "observation": "connectedDebugAndroidTest reported zero discovered tests and 'Process crashed'; 44 @Test annotations exist under app/src/androidTest."
+        },
+        {
+          "file": "app/build.gradle.kts",
+          "line_start": 94,
+          "line_end": 101,
+          "observation": "Release enables minification and resource shrinking, but CI does not assemble it."
+        }
+      ],
+      "instructions": [
+        "Split CI into fast JVM/lint and device/release jobs. Run testDebugUnitTest, lintDebug, assembleDebug, and assembleRelease on every pull request.",
+        "Add Gradle Managed Device or Android Emulator Runner jobs for API 26 and the latest CI-supported API near targetSdk. Execute connectedDebugAndroidTest or the managed-device equivalent.",
+        "Diagnose the current runner termination before treating the device suite as enabled: capture full logcat, instrumentation status, package-manager output, emulator boot properties, test XML, and Gradle managed-device logs as artifacts.",
+        "Keep first-mission completion, command acknowledgement, timeout suppression after completion, process recreation, rotation, back navigation, and accessibility semantics in the required device subset.",
+        "Add a profileable release Macrobenchmark job on a scheduled or pre-release workflow and retain traces.",
+        "Pin test emulator RAM, animation, locale, orientation, and font-scale settings for determinism; add separate accessibility configurations rather than relying on host defaults."
+      ],
+      "acceptance_criteria": [
+        "CI discovers and executes all intended instrumentation tests; zero discovered tests is a hard failure.",
+        "API 26 and a current reference API pass the critical flow from mission start through intended aircraft commands to a terminal completed result.",
+        "lintDebug and an R8/resource-shrunk release assembly are required checks.",
+        "Failures upload test reports, screenshots, logcat, and emulator diagnostics sufficient to identify runner versus app failures."
+      ],
+      "validation": [
+        "Reproduce and close the zero-test runner failure locally or in managed-device CI.",
+        "Intentionally break one semantics assertion and one release keep rule to verify both gates fail.",
+        "Run the complete CI matrix twice to identify order or timing flakiness."
+      ],
+      "automation_tags": [
+        "release-blocker",
+        "ci",
+        "instrumentation",
+        "lifecycle",
+        "r8"
+      ]
+    },
+    {
+      "rank": 6,
+      "id": "ATC-REV-006",
+      "priority": "P1",
+      "category": "security_supply_chain",
+      "confidence": "high",
+      "title": "Activate Gradle dependency verification and pin CI actions to immutable revisions",
+      "problem": "The repository contains dependency verification metadata only as .disabled and .bak files, so Gradle does not enforce it. GitHub Actions are referenced by mutable major-version tags.",
+      "impact": [
+        "A compromised dependency repository response or moved action tag can execute unreviewed code in CI.",
+        "Future workflows that receive signing or publishing secrets would inherit an avoidable supply-chain path."
+      ],
+      "evidence": [
+        {
+          "file": "gradle/verification-metadata.xml.disabled",
+          "line_start": 1,
+          "line_end": 5,
+          "observation": "Verification metadata exists but is deliberately named so Gradle will not load it."
+        },
+        {
+          "file": "gradle/verification-metadata.xml.bak",
+          "line_start": 1,
+          "line_end": 5,
+          "observation": "A second inactive metadata copy exists; there is no active gradle/verification-metadata.xml."
+        },
+        {
+          "file": ".github/workflows/android.yml",
+          "line_start": 22,
+          "line_end": 39,
+          "observation": "checkout, setup-java, setup-gradle, and upload-artifact use tag references rather than full commit SHAs."
+        }
+      ],
+      "instructions": [
+        "Regenerate and review one active gradle/verification-metadata.xml, enable strict dependency verification, and remove stale disabled/backup copies after the active file is validated.",
+        "Include checksums for artifacts and trusted signing keys where supported. Fail CI on unverified new components and review metadata changes as security-sensitive.",
+        "Pin every GitHub Action to a full commit SHA and retain the human-readable release version in an adjacent comment.",
+        "Keep workflow permissions at contents:read by default and grant publishing/signing permissions only to a protected environment and explicit release job.",
+        "Add dependency and action update automation that opens reviewable pull requests and cannot bypass required checks."
+      ],
+      "acceptance_criteria": [
+        "A build with dependency verification in strict mode succeeds from a clean Gradle cache.",
+        "Replacing one dependency checksum causes CI to fail.",
+        "Every uses entry in workflow files is a 40-character commit SHA.",
+        "No pull-request job can access release signing secrets or write repository contents."
+      ],
+      "validation": [
+        "Run ./gradlew --dependency-verification=strict testDebugUnitTest assembleRelease from a clean dependency cache.",
+        "Audit workflow permissions with GitHub's effective-permissions view.",
+        "Review and approve future verification-metadata diffs separately from ordinary dependency bumps."
+      ],
+      "automation_tags": [
+        "release-blocker",
+        "security",
+        "supply-chain",
+        "gradle",
+        "github-actions"
+      ]
+    },
+    {
+      "rank": 7,
+      "id": "ATC-REV-007",
+      "priority": "P2",
+      "category": "gameplay_correctness_situational_awareness",
+      "confidence": "high",
+      "title": "Drive runway wind displays from the live simulation weather",
+      "problem": "Runway UI models format wind from activeContent.weather, which is the scenario's initial authored weather, instead of the GameSnapshot.weather receiver. Dynamic weather can therefore affect the simulation and weather-impact panel while the primary runway wind display remains stale.",
+      "impact": [
+        "Players can make runway and approach decisions using contradictory wind information.",
+        "Dynamic-weather missions undermine trust in the radar HUD and command consequences."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2516,
+          "line_end": 2524,
+          "observation": "GameSnapshot.toRunwayUiModels reads activeContent?.weather rather than the snapshot's current weather."
+        }
+      ],
+      "instructions": [
+        "Format runway wind from GameSnapshot.weather and use the same current weather value for runway selection, weather impact, brief status, and accessibility description.",
+        "Move calm and wind formatting into string resources and a single locale-aware weather presenter.",
+        "When a material wind change activates, announce the new wind and any runway consequence once through the event feed/live region without repeating every tick.",
+        "If automatic active-runway changes are not intended, explicitly display that the active runway is controller-assigned despite the new wind."
+      ],
+      "acceptance_criteria": [
+        "Advancing across an authored weather-change tick updates all visible and spoken wind values in the same presentation frame.",
+        "Initial and dynamic calm conditions use a localized resource.",
+        "A test proves the runway card, weather-impact panel, and simulation snapshot cannot disagree about direction or speed."
+      ],
+      "validation": [
+        "Add a JVM mapper test around a weather-change boundary.",
+        "Add a Compose test that advances the deterministic clock and asserts the new runway wind text and accessibility announcement."
+      ],
+      "automation_tags": [
+        "gameplay",
+        "correctness",
+        "weather",
+        "hud"
+      ]
+    },
+    {
+      "rank": 8,
+      "id": "ATC-REV-008",
+      "priority": "P2",
+      "category": "accessibility_responsive_ui",
+      "confidence": "high",
+      "title": "Make gameplay layouts robust at large system font scales and small phone heights",
+      "problem": "The UI has a strong accessibility foundation, but critical gameplay regions use fixed heights and radar labels force 9 sp text. The instrumentation suite contains no fontScale configuration or large-text layout assertions. System font scaling can clip the HUD or command deck and consume the radar area on compact phones.",
+      "impact": [
+        "Players using 1.3x to 2.0x system text may lose objectives, wind, commands, or aircraft state.",
+        "Small labels can remain hard to read even with the in-game label scale setting.",
+        "Clipped controls reduce both accessibility and time-critical command responsiveness."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/RadarGameScreen.kt",
+          "line_start": 103,
+          "line_end": 112,
+          "observation": "The command deck uses fixed heights of 276, 316, or 360 dp."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/RadarGameScreen.kt",
+          "line_start": 445,
+          "line_end": 459,
+          "observation": "The non-narrow HUD is fixed to 48 or 50 dp."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/RadarGameScreen.kt",
+          "line_start": 1709,
+          "line_end": 1747,
+          "observation": "Conflict symbols and aircraft data are explicitly rendered at 9 sp with single-line constraints."
+        },
+        {
+          "source": "repository_search",
+          "observation": "No fontScale override or large-font test was found under app/src/androidTest."
+        }
+      ],
+      "instructions": [
+        "Replace fixed content heights with heightIn, intrinsic/adaptive measurement, and bounded scrolling. Preserve a minimum usable radar viewport while allowing the command deck to scroll independently.",
+        "Use window-size and available-height breakpoints together with LocalDensity.fontScale; provide a compact large-text mode instead of shrinking essential text.",
+        "Remove hard-coded 9 sp aircraft data text. Derive it from typography and the existing label-scale preference with a documented accessible minimum.",
+        "Give +/- controls adjustable semantics and meaningful state descriptions so screen-reader users can change values without locating two separate buttons.",
+        "Add tests at fontScale 1.0, 1.3, and 2.0 for a common compact phone in portrait and landscape. Assert critical text is displayed, controls remain at least 48 dp, and radar interaction remains available.",
+        "Run Android accessibility checks plus manual TalkBack traversal for mission guidance, aircraft selection, command assignment, conflict announcements, pause, and results."
+      ],
+      "acceptance_criteria": [
+        "At fontScale 2.0, no critical HUD or command text is clipped and every essential command remains reachable without an undiscoverable gesture.",
+        "Radar labels meet the team's documented minimum readable size and high-contrast palette passes WCAG AA contrast for normal text.",
+        "TalkBack focus order follows radar summary, selected aircraft, commands, objectives, events, and pause/exit in a predictable loop.",
+        "The radar remains selectable while guidance, objectives, or the command deck are visible."
+      ],
+      "validation": [
+        "Run screenshot and semantics tests for all font-scale/orientation combinations.",
+        "Use Accessibility Scanner or Compose accessibility checks and retain the report.",
+        "Complete one first mission with TalkBack and switch access or keyboard controls."
+      ],
+      "automation_tags": [
+        "gameplay",
+        "accessibility",
+        "responsive-layout",
+        "compose"
+      ]
+    },
+    {
+      "rank": 9,
+      "id": "ATC-REV-009",
+      "priority": "P2",
+      "category": "gameplay_feature_integrity",
+      "confidence": "high",
+      "title": "Implement route snapping end to end or remove the non-functional option",
+      "problem": "Route snapping is stored in global settings and custom-shift configuration, affects ranked configuration identity, and is published to GameUiState. CommitRoute is handled by the ViewModel. No production composable emits ToggleRouteSnapping or CommitRoute, and no radar freehand-route interaction consumes routeSnappingAssistEnabled. The option currently promises a gameplay effect that does not exist.",
+      "impact": [
+        "Players cannot understand or observe what the assist changes.",
+        "Two custom shifts can have different identity/ranking data while behaving identically.",
+        "Dead actions and state increase the cost of future route-control changes."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/GameContract.kt",
+          "line_start": 60,
+          "line_end": 60,
+          "observation": "Gameplay state exposes routeSnappingAssistEnabled."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/GameContract.kt",
+          "line_start": 428,
+          "line_end": 480,
+          "observation": "CommitRoute and ToggleRouteSnapping actions are part of the UI contract."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 371,
+          "line_end": 371,
+          "observation": "CommitRoute is handled."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1451,
+          "line_end": 1459,
+          "observation": "The assist flag is mapped into gameplay state."
+        },
+        {
+          "source": "repository_search",
+          "observation": "No ToggleRouteSnapping or CommitRoute emission exists in MenuScreens, RadarGameScreen, or AtcControllerApp."
+        }
+      ],
+      "instructions": [
+        "Choose one product outcome before the next release: implement discoverable radar route drawing/snapping with an accessible non-gesture equivalent, or remove the setting, action, state, persistence key, custom-shift flag, and ranked-identity contribution.",
+        "If implemented, show the unsnapped preview, snapped fixes, terminal target, undo, clear, and explicit Commit action while keeping aircraft selection available.",
+        "Define deterministic snapping distance in world or screen space, handle zoom consistently, reject self-intersecting or out-of-bounds routes clearly, and ensure engine validation remains authoritative.",
+        "If removed, migrate existing settings/configuration codes so old share codes decode predictably and document the schema change."
+      ],
+      "acceptance_criteria": [
+        "Turning route snapping on versus off causes a visible, tested difference in route input, or the option is absent everywhere.",
+        "Route creation is possible with touch and an accessibility action/list-based fix selector.",
+        "Ranked configuration identity includes only settings that alter gameplay.",
+        "No orphaned route actions or preferences remain."
+      ],
+      "validation": [
+        "Add unit tests for snapping thresholds, zoom independence, route validation, and configuration identity.",
+        "Add Compose tests for preview, undo, commit, rejection, and accessibility alternative.",
+        "Add migration tests if the configuration codec changes."
+      ],
+      "automation_tags": [
+        "gameplay",
+        "feature-integrity",
+        "routing",
+        "settings"
+      ]
+    },
+    {
+      "rank": 10,
+      "id": "ATC-REV-010",
+      "priority": "P2",
+      "category": "gameplay_command_usability_engagement",
+      "confidence": "high",
+      "title": "Reduce command tap workload and make clearance eligibility and acknowledgement explicit",
+      "problem": "Heading, altitude, and speed are adjusted only through fixed +/- steps of 5 degrees, 500 feet, and 10 knots. A 180-degree change can require 36 taps. In a time-sensitive multi-aircraft game this makes the core loop slower than the simulation challenge and increases selection mistakes.",
+      "impact": [
+        "High traffic becomes a test of repeated tapping rather than planning and prioritization.",
+        "Motor-impaired players and screen-reader users face disproportionate effort.",
+        "Players may miss whether a command was pending, accepted, or rejected while issuing several changes quickly."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/RadarGameScreen.kt",
+          "line_start": 2182,
+          "line_end": 2207,
+          "observation": "The compact assignment controls expose only +/- step callbacks for heading, altitude, and speed."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1206,
+          "line_end": 1228,
+          "observation": "The engine returns command rejection events, but the control itself has no pending/accepted/readback state."
+        }
+      ],
+      "instructions": [
+        "Add a fast, discoverable input method: press-and-hold repeat with acceleration, a radial/slider picker with coarse and fine modes, numeric presets, or a combination validated with players.",
+        "Keep single taps deterministic and add adjustable accessibility semantics for increment/decrement without requiring repeated focus movement.",
+        "Show an immediate controller readback containing callsign, assigned value, and command state. Distinguish submitted, accepted, and rejected; retain the last rejection beside the relevant control until superseded.",
+        "Derive command availability from aircraft phase and runway state. Keep unavailable actions explainable through a disabled reason or an info affordance rather than allowing avoidable trial-and-error.",
+        "Add common quick values such as cardinal/intercardinal headings, valid flight levels, speed bands, active runway, and eligible approach while preserving direct-to-fix commands.",
+        "Instrument only privacy-safe local interaction counters unless the product explicitly adopts consented analytics; compare taps and completion time before and after."
+      ],
+      "acceptance_criteria": [
+        "A player can issue any valid heading, altitude, or speed target with at most a small bounded number of interactions independent of the numeric distance.",
+        "Every submitted clearance produces an immediate visual and spoken readback tied to the selected callsign.",
+        "Invalid clearances explain the unmet precondition without changing engine state.",
+        "First-mission completion remains possible without dismissing guidance or losing radar interaction."
+      ],
+      "validation": [
+        "Add reducer tests for press/repeat, bounds, wraparound, selection changes, acceptance, and rejection.",
+        "Add Compose semantics tests for adjustable actions and readback live regions.",
+        "Run a five-aircraft usability session and record median taps per aircraft, command error rate, and completion time."
+      ],
+      "automation_tags": [
+        "gameplay",
+        "commands",
+        "engagement",
+        "accessibility"
+      ]
+    },
+    {
+      "rank": 11,
+      "id": "ATC-REV-011",
+      "priority": "P3",
+      "category": "localization_rtl",
+      "confidence": "high",
+      "title": "Complete the localization boundary or explicitly declare an English-only release",
+      "problem": "The manifest declares RTL support, but the project has only the default values/strings.xml. Several player-facing labels are constructed from enum names or hard-coded English, and presentation code applies locale-sensitive uppercase/lowercase transformations at runtime.",
+      "impact": [
+        "Pseudo-locales and RTL can expose clipped, awkward, or untranslated UI.",
+        "Enum renames can silently change player-facing text.",
+        "Locale-sensitive casing can produce inconsistent aviation labels."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/AndroidManifest.xml",
+          "line_start": 6,
+          "line_end": 13,
+          "observation": "supportsRtl is true."
+        },
+        {
+          "file": "app/src/main/res/values/strings.xml",
+          "line_start": 1,
+          "line_end": 1,
+          "observation": "This is the only strings resource locale in app/src/main/res."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 1498,
+          "line_end": 1504,
+          "observation": "A dynamic-event lifecycle label is built from enum.name."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2516,
+          "line_end": 2521,
+          "observation": "Calm is hard-coded in English."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 4068,
+          "line_end": 4074,
+          "observation": "Training title is constructed as an English '$title Academy' phrase."
+        }
+      ],
+      "instructions": [
+        "Replace all player-facing enum-name formatting and hard-coded English with resource IDs or typed presentation labels.",
+        "Use locale-explicit casing for protocol/configuration identifiers and localized resources for display text.",
+        "If localization is in scope, enable en-XA and ar-XB pseudo-locale testing, verify start/end layout usage, and add translator context for ATC abbreviations that must remain invariant.",
+        "If version 1 is intentionally English-only, declare that product decision, remove misleading locale promises where appropriate, and still pass pseudo-locale expansion tests for future readiness."
+      ],
+      "acceptance_criteria": [
+        "Repository search finds no player-facing enum.name transformation or hard-coded sentence in presentation code.",
+        "Pseudo-locale text expansion does not clip critical menus, objectives, or commands.",
+        "RTL mirrors navigation and layout appropriately while radar bearings, callsigns, runway identifiers, and numeric aviation data remain semantically correct."
+      ],
+      "validation": [
+        "Run lint localization checks and pseudo-locale screenshot tests.",
+        "Review all resource strings with product context and translatability annotations."
+      ],
+      "automation_tags": [
+        "cleanup",
+        "localization",
+        "rtl"
+      ]
+    },
+    {
+      "rank": 12,
+      "id": "ATC-REV-012",
+      "priority": "P3",
+      "category": "code_quality_type_safety",
+      "confidence": "high",
+      "title": "Replace stringly typed UI state and remove obsolete parameters and actions",
+      "problem": "Handoff state crosses the UI contract as String and composables compare literal enum names. fixesFor accepts an unused GameSnapshot parameter under suppression. Route-related actions are orphaned unless ATC-REV-009 is implemented. These patterns bypass compiler exhaustiveness and make refactoring fragile.",
+      "impact": [
+        "Renaming a domain enum can silently break command availability.",
+        "Dead parameters and actions obscure actual dependencies and increase automated-review noise."
+      ],
+      "evidence": [
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/GameContract.kt",
+          "line_start": 100,
+          "line_end": 110,
+          "observation": "AircraftUiModel.handoffStatus is String?."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/RadarGameScreen.kt",
+          "line_start": 2344,
+          "line_end": 2388,
+          "observation": "The UI compares OFFERED, REQUESTED, ACKNOWLEDGED, and COMPLETED string literals."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2508,
+          "line_end": 2512,
+          "observation": "The domain handoff enum is converted to name."
+        },
+        {
+          "file": "app/src/main/java/com/stuart/atccontroller/ui/LiveGameViewModel.kt",
+          "line_start": 2537,
+          "line_end": 2537,
+          "observation": "fixesFor suppresses an unused snapshot parameter."
+        }
+      ],
+      "instructions": [
+        "Use a typed HandoffStatusUi enum or sealed presentation type and map every domain state exhaustively in one mapper.",
+        "Attach localized label and allowed-action derivation to the typed presentation mapping; do not compare display strings in composables.",
+        "Remove the unused fixesFor parameter and any remaining suppressions that hide obsolete dependencies.",
+        "After the route-snapping product decision, delete every unused action, state field, preference, and test or connect it through a tested UI event path.",
+        "Enable or retain compiler and static-analysis checks for unused declarations, exhaustive when expressions, and forbidden raw status strings."
+      ],
+      "acceptance_criteria": [
+        "No domain status is transported or compared through enum.name strings in the UI layer.",
+        "No unused-parameter suppression remains in production mapping code.",
+        "Every GameAction has at least one production emitter and one handler, or is removed.",
+        "Static analysis and all tests pass without new suppressions."
+      ],
+      "validation": [
+        "Add mapping tests for every handoff state and allowed action.",
+        "Add a repository check that inventories GameAction emitters and handlers.",
+        "Run testDebugUnitTest and lintDebug."
+      ],
+      "automation_tags": [
+        "cleanup",
+        "type-safety",
+        "dead-code"
+      ]
+    }
+  ],
+  "remediation_sequence": [
+    {
+      "phase": 1,
+      "name": "Release safety and observability",
+      "issue_ids": [
+        "ATC-REV-001",
+        "ATC-REV-002",
+        "ATC-REV-003",
+        "ATC-REV-005",
+        "ATC-REV-006"
+      ],
+      "exit_condition": "Performance is measured, writes are failure-safe, replay limits are consistent, device tests run, and the build supply chain is verified."
+    },
+    {
+      "phase": 2,
+      "name": "Architecture extraction",
+      "issue_ids": [
+        "ATC-REV-004"
+      ],
+      "exit_condition": "Session, replay, persistence, progression, training, and UI mapping have explicit ownership and injected dependencies."
+    },
+    {
+      "phase": 3,
+      "name": "Gameplay correctness and accessibility",
+      "issue_ids": [
+        "ATC-REV-007",
+        "ATC-REV-008",
+        "ATC-REV-009",
+        "ATC-REV-010"
+      ],
+      "exit_condition": "Live weather is consistent, large-text layouts pass, every advertised assist works, and core commands are fast and clearly acknowledged."
+    },
+    {
+      "phase": 4,
+      "name": "Presentation cleanup",
+      "issue_ids": [
+        "ATC-REV-011",
+        "ATC-REV-012"
+      ],
+      "exit_condition": "User-facing text is resource-backed, status is typed, and orphaned actions and suppressions are removed."
+    }
+  ]
+}

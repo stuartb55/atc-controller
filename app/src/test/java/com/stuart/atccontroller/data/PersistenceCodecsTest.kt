@@ -1,6 +1,9 @@
 package com.stuart.atccontroller.data
 
+import java.nio.charset.StandardCharsets
 import java.time.LocalDate
+import java.util.Base64
+import java.util.zip.CRC32
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -109,6 +112,30 @@ class PersistenceCodecsTest {
         assertEquals(2_500, decoded.entries.getValue(firstDate.toString()).bestScore)
         assertEquals(2, decoded.currentStreak)
         assertEquals(2, decoded.bestStreak)
+    }
+
+    @Test
+    fun dailyRecordCanonicalizesLegacyConfigurationIdentity() {
+        val date = LocalDate.of(2026, 7, 17)
+        val canonicalIdentity = DailyShift.identityFor(date)
+        val legacyIdentity = "$date|${legacyShareCode(DailyShift.configurationFor(date))}"
+        val stored = DailyServiceRecord(
+            entries = mapOf(
+                date.toString() to DailyResultEntry(
+                    localDateIso = date.toString(),
+                    configurationIdentity = legacyIdentity,
+                    bestScore = 2_400,
+                    firstResultId = "legacy-daily",
+                    completedAttempts = 1,
+                ),
+            ),
+            currentStreak = 1,
+            bestStreak = 1,
+        )
+
+        val decoded = DailyServiceRecordCodec.decode(DailyServiceRecordCodec.encode(stored))
+
+        assertEquals(canonicalIdentity, decoded.entries.getValue(date.toString()).configurationIdentity)
     }
 
     @Test
@@ -298,5 +325,22 @@ class PersistenceCodecsTest {
         val unlocked = unlockedAfterMissionCompletion(emptySet(), first)
 
         assertEquals(ContentRegistry.firstMissionIds + second, unlocked)
+    }
+
+    private fun legacyShareCode(configuration: ShiftConfiguration): String {
+        val current = ShiftConfigurationCodec.encode(configuration)
+        val encodedPayload = current.split('.')[1]
+        val fields = String(
+            Base64.getUrlDecoder().decode(encodedPayload),
+            StandardCharsets.UTF_8,
+        ).split('|').toMutableList()
+        fields.add(8, "1")
+        val legacyPayload = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(fields.joinToString("|").toByteArray(StandardCharsets.UTF_8))
+        val checksum = CRC32().run {
+            update(legacyPayload.toByteArray(StandardCharsets.UTF_8))
+            java.lang.Long.toString(value, 36).padStart(7, '0')
+        }
+        return "ATC1.$legacyPayload.$checksum"
     }
 }

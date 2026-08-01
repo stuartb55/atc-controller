@@ -162,6 +162,7 @@ Leaving or backgrounding an active shift pauses and saves a deterministic comman
 **Continue** on the home screen to reconstruct it. Settings include audio levels, haptics, trails,
 reduced motion, high contrast, label size, label decluttering and pause-on-focus-loss.
 
-Custom setup can switch sector packs. A Manchester configuration uses the legacy-compatible `ATC1`
-share namespace; other packs use `ATC2` with an explicit pack ID. Imports contain configuration
-only—never identity, progress, analytics or save data—and use the clipboard/share sheet locally.
+Custom setup can switch sector packs. New Manchester codes use the `ATC3` share schema; other packs
+use `ATC4` with an explicit pack ID. The app still imports older `ATC1` and `ATC2` codes, ignoring
+their retired route-snapping flag. Imports contain configuration only—never identity, progress,
+analytics or save data—and use the clipboard/share sheet locally.

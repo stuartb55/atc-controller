@@ -103,6 +103,18 @@ android {
                 "proguard-rules.pro",
             )
         }
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            isDebuggable = false
+            isProfileable = true
+            // Keep the target release-like and profileable. The standalone
+            // com.android.test APK cannot consume the target app's R8 mapping,
+            // so benchmark builds intentionally retain stable class names.
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
 
     compileOptions {

@@ -1,0 +1,7 @@
+{
+  "scenario": "deterministic maximum-traffic custom shift",
+  "speeds": [1, 2],
+  "frame_duration_cpu_ms_p95_max": 32.0,
+  "frame_overrun_ms_p95_max": 16.0,
+  "memory_heap_size_kb_max": 262144
+}

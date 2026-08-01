@@ -44,6 +44,10 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -773,11 +777,6 @@ fun CustomShiftScreen(configuration: CustomShiftUiModel, onAction: (GameAction) 
         }
         item {
             SettingToggle(
-                stringResource(R.string.assist_route_snapping),
-                stringResource(R.string.assist_practice_only),
-                configuration.routeSnapping,
-            ) { onAction(GameAction.ToggleCustomRouteSnapping) }
-            SettingToggle(
                 stringResource(R.string.assist_approach_setup),
                 stringResource(R.string.assist_practice_only),
                 configuration.approachSetup,
@@ -1350,6 +1349,9 @@ private fun MissionPreview(modifier: Modifier = Modifier) {
 @Composable
 fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
     val colors = MaterialTheme.atcColors
+    var pendingLabelScale by remember(settings.labelScale) {
+        mutableFloatStateOf(settings.labelScale)
+    }
     val radarLabelDescription = stringResource(R.string.cd_radar_label_size)
     val audioPanelTitle = stringResource(R.string.audio_feedback).uppercase()
     val radarPanelTitle = stringResource(R.string.radar_accessibility).uppercase()
@@ -1388,11 +1390,14 @@ fun SettingsScreen(settings: SettingsUiState, onAction: (GameAction) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(stringResource(R.string.label_size).uppercase(), style = MaterialTheme.typography.labelLarge, color = colors.white)
-                Text(stringResource(R.string.percent_value, (settings.labelScale * 100).toInt()), style = MaterialTheme.typography.labelSmall, color = colors.green)
+                Text(stringResource(R.string.percent_value, (pendingLabelScale * 100).toInt()), style = MaterialTheme.typography.labelSmall, color = colors.green)
             }
             Slider(
-                value = settings.labelScale,
-                onValueChange = { onAction(GameAction.SetLabelScale(it)) },
+                value = pendingLabelScale,
+                onValueChange = { pendingLabelScale = it },
+                onValueChangeFinished = {
+                    onAction(GameAction.SetLabelScale(pendingLabelScale))
+                },
                 valueRange = .8f..1.4f,
                 steps = 5,
                 modifier = Modifier.weight(1.2f).semantics { contentDescription = radarLabelDescription },
@@ -1503,6 +1508,9 @@ private fun VolumeSetting(
     onToggleMute: () -> Unit,
 ) {
     val colors = MaterialTheme.atcColors
+    var pendingVolume by remember(volume) {
+        mutableFloatStateOf(volume.coerceIn(0f, 1f))
+    }
     val sliderDescription = stringResource(R.string.cd_volume_level, title)
     val muteDescription = if (volume > 0f) {
         stringResource(R.string.mute_named_audio, title)
@@ -1528,8 +1536,9 @@ private fun VolumeSetting(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Slider(
-                value = volume.coerceIn(0f, 1f),
-                onValueChange = onVolumeChange,
+                value = pendingVolume,
+                onValueChange = { pendingVolume = it },
+                onValueChangeFinished = { onVolumeChange(pendingVolume) },
                 valueRange = 0f..1f,
                 steps = 9,
                 modifier = Modifier.weight(1f).semantics { contentDescription = sliderDescription },
@@ -1540,7 +1549,7 @@ private fun VolumeSetting(
                 ),
             )
             Text(
-                stringResource(R.string.percent_value, (volume.coerceIn(0f, 1f) * 100).toInt()),
+                stringResource(R.string.percent_value, (pendingVolume * 100).toInt()),
                 modifier = Modifier.width(48.dp),
                 style = MaterialTheme.typography.labelMedium,
                 color = colors.green,

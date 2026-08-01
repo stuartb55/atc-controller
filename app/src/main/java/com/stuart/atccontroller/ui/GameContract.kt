@@ -32,6 +32,8 @@ data class GameUiState(
     val isRestoring: Boolean = false,
     /** Signals that the current session could not be checkpointed and may not be resumable. */
     val sessionPersistenceFailed: Boolean = false,
+    /** Latest unresolved durable write, surfaced globally so failures are actionable. */
+    val persistenceStatus: PersistenceStatusUiModel? = null,
     val result: MissionResultUiModel? = null,
     val canContinue: Boolean = false,
     val progressionSaveStatus: ProgressionSaveStatus = ProgressionSaveStatus.NOT_REQUIRED,
@@ -43,6 +45,7 @@ data class GameUiState(
     val missionClockState: MissionClockState = MissionClockState.ACTIVE,
     val upcomingTraffic: List<UpcomingTrafficUiModel> = emptyList(),
     val eventFeed: List<EventFeedEntryUiModel> = emptyList(),
+    val commandReadback: CommandReadbackUiModel? = null,
     val flightStrips: List<FlightStripUiModel> = emptyList(),
     val starForecast: StarForecastUiModel = StarForecastUiModel(),
     val weatherImpact: WeatherImpactUiModel = WeatherImpactUiModel(),
@@ -57,7 +60,6 @@ data class GameUiState(
     val isDailySession: Boolean = false,
     val configurationIdentity: String? = null,
     val activeAssistLabels: List<String> = emptyList(),
-    val routeSnappingAssistEnabled: Boolean = true,
     val approachSetupAssistEnabled: Boolean = true,
     val conflictPredictionAssistEnabled: Boolean = true,
     val endlessMilestone: EndlessMilestoneUiModel? = null,
@@ -105,9 +107,12 @@ data class AircraftUiModel(
     val conflictLevel: ConflictLevel = ConflictLevel.NONE,
     val holdFixName: String? = null,
     val holdSeconds: Int = 0,
-    val handoffStatus: String? = null,
+    val handoffStatus: HandoffStatusUi? = null,
+    val handoffStatusLabel: String? = null,
     val exitClearanceGranted: Boolean = false,
 )
+
+enum class HandoffStatusUi { OFFERED, REQUESTED, ACKNOWLEDGED, COMPLETED, TIMED_OUT }
 
 enum class ConflictLevel { NONE, PREDICTED, LOSS }
 
@@ -142,6 +147,17 @@ data class EventFeedEntryUiModel(
     val aircraftIds: List<String> = emptyList(),
     val severity: EventFeedSeverity = EventFeedSeverity.ROUTINE,
     val rejectionCode: String? = null,
+)
+
+enum class CommandReadbackStatus { SUBMITTED, ACCEPTED, REJECTED }
+
+data class CommandReadbackUiModel(
+    val sequence: Long,
+    val aircraftId: String,
+    val callsign: String,
+    val command: String,
+    val status: CommandReadbackStatus,
+    val detail: String? = null,
 )
 
 data class FlightStripUiModel(
@@ -310,7 +326,6 @@ data class SettingsUiState(
     val highContrast: Boolean = false,
     val labelScale: Float = 1f,
     val labelDeclutteringEnabled: Boolean = true,
-    val routeSnappingEnabled: Boolean = true,
     val pauseOnFocusLoss: Boolean = true,
 ) {
     val musicEnabled: Boolean get() = musicVolume > 0f
@@ -369,7 +384,6 @@ data class CustomShiftUiModel(
     val weatherPreset: String = "CALM",
     val fuelPressure: String = "STANDARD",
     val strikeLimit: Int = 3,
-    val routeSnapping: Boolean = true,
     val approachSetup: Boolean = true,
     val conflictPrediction: Boolean = true,
     val previewTraffic: Int = 16,
@@ -400,6 +414,13 @@ data class EndlessMilestoneUiModel(
     val choicePending: Boolean = false,
 )
 
+enum class PersistenceStatusUiState { SAVING, FAILED_RETRYABLE, FAILED_PERMANENT }
+
+data class PersistenceStatusUiModel(
+    val operationId: String,
+    val state: PersistenceStatusUiState,
+)
+
 sealed interface GameAction {
     data class Navigate(val screen: AppScreen) : GameAction
     data class SelectMission(val id: String) : GameAction
@@ -413,7 +434,6 @@ sealed interface GameAction {
     data class CycleCustomWeather(val offset: Int) : GameAction
     data class CycleCustomFuelPressure(val offset: Int) : GameAction
     data class SetCustomStrikeLimit(val limit: Int) : GameAction
-    data object ToggleCustomRouteSnapping : GameAction
     data object ToggleCustomApproachSetup : GameAction
     data object ToggleCustomConflictPrediction : GameAction
     data object UseRankedSeededPreset : GameAction
@@ -425,10 +445,6 @@ sealed interface GameAction {
     data object CashOutEndlessRun : GameAction
     data object ContinueLastGame : GameAction
     data class SelectAircraft(val id: String?) : GameAction
-    data class CommitRoute(
-        val points: List<NormalizedPoint>,
-        val terminalTarget: RouteTerminalTarget? = null,
-    ) : GameAction
     data class DirectToFix(val name: String) : GameAction
     data class AppendFix(val name: String) : GameAction
     data object UndoWaypoint : GameAction
@@ -466,6 +482,7 @@ sealed interface GameAction {
     data object ConfirmAbandonment : GameAction
     data object CancelAbandonment : GameAction
     data object RetryProgressionPersistence : GameAction
+    data class RetryPersistence(val operationId: String) : GameAction
     data object OpenNextMission : GameAction
     data object RestartMission : GameAction
     data class SetMusicVolume(val volume: Float) : GameAction
@@ -477,7 +494,6 @@ sealed interface GameAction {
     data object ToggleReducedMotion : GameAction
     data object ToggleHighContrast : GameAction
     data object ToggleLabelDecluttering : GameAction
-    data object ToggleRouteSnapping : GameAction
     data object TogglePauseOnFocusLoss : GameAction
     data class SetLabelScale(val scale: Float) : GameAction
     data class CycleConflict(val offset: Int) : GameAction

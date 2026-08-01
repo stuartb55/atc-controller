@@ -11,4 +11,6 @@ keystore.properties
 build/
 app/build/
 captures/
+__pycache__/
+*.py[cod]
 .DS_Store

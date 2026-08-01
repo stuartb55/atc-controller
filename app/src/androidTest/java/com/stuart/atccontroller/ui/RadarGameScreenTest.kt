@@ -3,12 +3,16 @@ package com.stuart.atccontroller.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -47,9 +51,33 @@ class RadarGameScreenTest {
             }
         }
 
-        composeRule.onNodeWithText("090°").assertIsDisplayed()
-        composeRule.onNodeWithText("FL30").assertIsDisplayed()
-        composeRule.onNodeWithText("160 kt").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Assigned heading")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "090°",
+                ),
+            )
+        composeRule.onNodeWithContentDescription("Target altitude")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "FL30",
+                ),
+            )
+        composeRule.onNodeWithContentDescription("Target speed")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assert(
+                SemanticsMatcher.expectValue(
+                    SemanticsProperties.StateDescription,
+                    "160 kt",
+                ),
+            )
     }
 
     @Test

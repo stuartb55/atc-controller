@@ -10,6 +10,17 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
+ * Allocation-conscious frame for high-frequency presentation.
+ *
+ * [eventSequenceStart] identifies the first event in [GameSnapshot.events]. Routine frames omit
+ * [GameSnapshot.eventHistory]; terminal and explicit diagnostic snapshots still retain it.
+ */
+data class SimulationFrame(
+    val snapshot: GameSnapshot,
+    val eventSequenceStart: Long,
+)
+
+/**
  * Deterministic, Android-free simulation engine.
  *
  * A UI normally calls [submit] for player actions and [advance] from its frame clock. Physics is
@@ -79,11 +90,29 @@ class AtcSimulationEngine(
     }
 
     val snapshot: GameSnapshot
-        @Synchronized get() = createSnapshot(lastEvents)
+        @Synchronized get() = createSnapshot(
+            events = lastEvents,
+            includeEventHistory = true,
+            deepCopyAircraft = true,
+        )
+
+    val presentationFrame: SimulationFrame
+        @Synchronized get() = createFrame(lastEvents, includeEventHistory = false)
 
     /** Applies one typed player action and returns the resulting immutable state. */
     @Synchronized
-    fun submit(command: PlayerCommand): GameSnapshot {
+    fun submit(command: PlayerCommand): GameSnapshot =
+        submitInternal(command, includeEventHistory = true).snapshot
+
+    /** Applies a command without copying retained event history into a routine UI frame. */
+    @Synchronized
+    fun submitForPresentation(command: PlayerCommand): SimulationFrame =
+        submitInternal(command, includeEventHistory = false)
+
+    private fun submitInternal(
+        command: PlayerCommand,
+        includeEventHistory: Boolean,
+    ): SimulationFrame {
         val events = mutableListOf<GameEvent>()
         when (command) {
             PlayerCommand.Start -> start(events)
@@ -200,7 +229,7 @@ class AtcSimulationEngine(
         }
         lastEvents = events.toList()
         rememberEvents(lastEvents)
-        return createSnapshot(lastEvents)
+        return createFrame(lastEvents, includeEventHistory)
     }
 
     /**
@@ -208,7 +237,18 @@ class AtcSimulationEngine(
      * seconds. A paused, ready, or terminal simulation does not accumulate time.
      */
     @Synchronized
-    fun advance(realDeltaSeconds: Double): GameSnapshot {
+    fun advance(realDeltaSeconds: Double): GameSnapshot =
+        advanceInternal(realDeltaSeconds, includeEventHistory = true).snapshot
+
+    /** Advances without copying retained event history into a routine UI frame. */
+    @Synchronized
+    fun advanceForPresentation(realDeltaSeconds: Double): SimulationFrame =
+        advanceInternal(realDeltaSeconds, includeEventHistory = false)
+
+    private fun advanceInternal(
+        realDeltaSeconds: Double,
+        includeEventHistory: Boolean,
+    ): SimulationFrame {
         require(realDeltaSeconds >= 0.0 && realDeltaSeconds.isFinite()) {
             "Delta time must be finite and non-negative"
         }
@@ -223,12 +263,23 @@ class AtcSimulationEngine(
         }
         lastEvents = events.toList()
         rememberEvents(lastEvents)
-        return createSnapshot(lastEvents)
+        return createFrame(lastEvents, includeEventHistory)
     }
 
     /** Exact fixed-step advancement for tests, replays, and headless simulation. */
     @Synchronized
-    fun advanceFixedSteps(count: Int = 1): GameSnapshot {
+    fun advanceFixedSteps(count: Int = 1): GameSnapshot =
+        advanceFixedStepsInternal(count, includeEventHistory = true).snapshot
+
+    /** Exact fixed-step advancement without retained-history copies for replay presentation. */
+    @Synchronized
+    fun advanceFixedStepsForPresentation(count: Int = 1): SimulationFrame =
+        advanceFixedStepsInternal(count, includeEventHistory = false)
+
+    private fun advanceFixedStepsInternal(
+        count: Int,
+        includeEventHistory: Boolean,
+    ): SimulationFrame {
         require(count >= 0) { "Step count must be non-negative" }
         val events = mutableListOf<GameEvent>()
         repeat(count) {
@@ -236,7 +287,7 @@ class AtcSimulationEngine(
         }
         lastEvents = events.toList()
         rememberEvents(lastEvents)
-        return createSnapshot(lastEvents)
+        return createFrame(lastEvents, includeEventHistory)
     }
 
     private fun start(events: MutableList<GameEvent>) {
@@ -2344,23 +2395,55 @@ class AtcSimulationEngine(
             (state.position.y >= 1.0 - EPSILON && south > EPSILON)
     }
 
-    private fun createSnapshot(events: List<GameEvent>): GameSnapshot = GameSnapshot(
+    private fun createFrame(
+        events: List<GameEvent>,
+        includeEventHistory: Boolean,
+    ): SimulationFrame {
+        // Terminal accounting reads retained history once. Routine frames deliver only the bounded
+        // delta in `events`, avoiding a 200-element history copy on every clock tick.
+        val retainHistory = includeEventHistory || status == GameStatus.COMPLETED ||
+            status == GameStatus.FAILED
+        return SimulationFrame(
+            snapshot = createSnapshot(
+                events = events,
+                includeEventHistory = retainHistory,
+                deepCopyAircraft = retainHistory,
+            ),
+            eventSequenceStart = (recordedEventCount - events.size).coerceAtLeast(0L),
+        )
+    }
+
+    private fun createSnapshot(
+        events: List<GameEvent>,
+        includeEventHistory: Boolean,
+        deepCopyAircraft: Boolean,
+    ): GameSnapshot = GameSnapshot(
         scenarioId = scenario.id,
         tick = tick,
         elapsedSeconds = elapsedSeconds,
         status = status,
         failureReason = failureReason,
         speedMultiplier = speedMultiplier,
-        aircraft = aircraft.values.map { it.deepCopy() },
+        // Engine state is immutable-by-replacement. A presentation frame can safely retain these
+        // instances while diagnostic snapshots keep the historical defensive deep copy contract.
+        aircraft = if (deepCopyAircraft) {
+            aircraft.values.map { it.deepCopy() }
+        } else {
+            aircraft.values.toList()
+        },
         runways = runways.values.toList(),
         conflicts = currentConflicts.toList(),
         strikes = strikes,
         score = score,
         stars = scenario.objectives.starScoreThresholds.count { score.total >= it },
         pendingAircraftCount = resolvedTraffic.size - nextSpawnIndex,
-        events = events.toList(),
-        eventHistory = eventHistory.toList(),
-        eventHistoryStartSequence = recordedEventCount - eventHistory.size,
+        events = events,
+        eventHistory = if (includeEventHistory) eventHistory.toList() else emptyList(),
+        eventHistoryStartSequence = if (includeEventHistory) {
+            recordedEventCount - eventHistory.size
+        } else {
+            recordedEventCount
+        },
         upcomingAircraft = resolvedTraffic.drop(nextSpawnIndex).take(3).map { spawn ->
             UpcomingAircraft(
                 aircraftId = spawn.aircraft.id,

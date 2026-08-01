@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +67,10 @@ fun AtcControllerApp(
             SessionStatusBanners(
                 isRestoring = state.isRestoring,
                 persistenceFailed = state.sessionPersistenceFailed,
+                durableWrite = state.persistenceStatus,
+                onRetry = { operationId ->
+                    onAction(GameAction.RetryPersistence(operationId))
+                },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .safeDrawingPadding()
@@ -96,6 +101,8 @@ internal fun appBackAction(state: GameUiState): GameAction? = when (state.screen
 private fun SessionStatusBanners(
     isRestoring: Boolean,
     persistenceFailed: Boolean,
+    durableWrite: PersistenceStatusUiModel?,
+    onRetry: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.atcColors
@@ -130,6 +137,42 @@ private fun SessionStatusBanners(
                     style = MaterialTheme.typography.labelLarge,
                     color = colors.amber,
                 )
+            }
+        }
+        if (durableWrite != null) {
+            val failed = durableWrite.state != PersistenceStatusUiState.SAVING
+            Surface(
+                color = colors.panel.copy(alpha = .97f),
+                border = BorderStroke(1.dp, if (failed) colors.amber else colors.cyan),
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier
+                    .padding(top = 6.dp)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        text = stringResource(
+                            when (durableWrite.state) {
+                                PersistenceStatusUiState.SAVING ->
+                                    R.string.persistence_saving
+                                PersistenceStatusUiState.FAILED_RETRYABLE ->
+                                    R.string.persistence_failed_retryable
+                                PersistenceStatusUiState.FAILED_PERMANENT ->
+                                    R.string.persistence_failed_permanent
+                            },
+                        ),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (failed) colors.amber else colors.cyan,
+                    )
+                    if (durableWrite.state == PersistenceStatusUiState.FAILED_RETRYABLE) {
+                        TextButton(onClick = { onRetry(durableWrite.operationId) }) {
+                            Text(stringResource(R.string.retry_save))
+                        }
+                    }
+                }
             }
         }
     }

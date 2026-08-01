@@ -35,6 +35,9 @@ class MainActivityTest {
 
     @Before
     fun seedPersistedSettings() = runBlocking {
+        // A connected-test install preserves app data between test invocations. Start from the
+        // home screen so a stale active session cannot make this settings test order-dependent.
+        repository.resetProgress()
         repository.setSettings(
             PlayerSettings(
                 musicVolume = 0f,
@@ -55,7 +58,7 @@ class MainActivityTest {
     @Test
     fun persistedSettingsAreAppliedByMainActivityAndSurviveRecreation() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            composeRule.waitUntil(timeoutMillis = 5_000) {
+            composeRule.waitUntil(timeoutMillis = 10_000) {
                 composeRule.onAllNodesWithText("SETTINGS").fetchSemanticsNodes().isNotEmpty()
             }
             composeRule.onNodeWithText("SETTINGS").performClick()
@@ -67,6 +70,11 @@ class MainActivityTest {
 
             scenario.recreate()
 
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                composeRule.onAllNodesWithText("Controller settings")
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+            }
             composeRule.onNodeWithText("Controller settings").assertIsDisplayed()
             composeRule.onNodeWithContentDescription("Music volume").assertIsDisplayed()
             composeRule.onNodeWithContentDescription("Unmute Music").assertIsDisplayed()

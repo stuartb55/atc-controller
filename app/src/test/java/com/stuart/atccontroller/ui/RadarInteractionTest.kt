@@ -3,7 +3,6 @@ package com.stuart.atccontroller.ui
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,21 +50,6 @@ class RadarInteractionTest {
 
         val reset = updateRadarViewport(zoomed, Offset(160f, 110f), Offset.Zero, .01f, size)
         assertEquals(RadarViewport(), reset)
-    }
-
-    @Test
-    fun approachCompositionAppendsValidatedInterceptAndThreshold() {
-        val drawn = listOf(NormalizedPoint(.1f, .1f), NormalizedPoint(.4f, .4f))
-        val final = listOf(NormalizedPoint(.6f, .6f), NormalizedPoint(.7f, .7f))
-        assertEquals(drawn + final, composeApproachRoute(drawn, final))
-    }
-
-    @Test
-    fun onlyAssignedRunwayIsAcceptedForAnArrival() {
-        assertTrue(routeTerminalIsAllowed(RouteTerminalTarget.AssignedRunway("23R"), "23R", true))
-        assertFalse(routeTerminalIsAllowed(RouteTerminalTarget.AssignedRunway("23L"), "23R", true))
-        assertFalse(routeTerminalIsAllowed(RouteTerminalTarget.AssignedRunway("23R"), "23R", false))
-        assertTrue(routeTerminalIsAllowed(RouteTerminalTarget.NavigationFix("NORTH"), null, false))
     }
 
     @Test
